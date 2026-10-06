@@ -5,7 +5,8 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Package Manager: uv](https://img.shields.io/badge/package%20manager-uv-purple.svg)](https://github.com/astral-sh/uv)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/SatangThevalue/satangthevalue-tts-custom/blob/main/notebooks/colab_pipeline.ipynb)
+[![Open Pipeline In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/SatangThevalue/satangthevalue-tts-custom/blob/main/notebooks/colab_pipeline.ipynb)
+[![Open Inference In Colab](https://img.shields.io/badge/Colab-Inference%20Only-orange.svg)](https://colab.research.google.com/github/SatangThevalue/satangthevalue-tts-custom/blob/main/notebooks/colab_inference_only.ipynb)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
@@ -23,6 +24,7 @@
 | **06** | [ONNX Export & INT8 Quantization](docs/06_onnx_export_and_quantization.md) | การแปลงโมเดล, OnnxSlim Pruning และ Dynamic INT8 Quantization |
 | **07** | [DSP Mastering & Runtime](docs/07_dsp_mastering_and_runtime.md) | In-Memory Studio Mastering Chain ด้วย Spotify Pedalboard |
 | **08** | [Metrics, KPIs & Guards](docs/08_metrics_kpis_and_guards.md) | ตารางตัวชี้วัดความสำเร็จและตัวดัก Error ในโค้ด Python |
+| **09** | [ONNX Inference Testing Guide](docs/09_onnx_inference_testing_guide.md) | คู่มือการนำโมเดล ONNX จาก Drive มาทดสอบสร้างเสียงและฟังผลใน Colab |
 
 ---
 
