@@ -180,6 +180,15 @@ def train_lora(config_path: str, lora_config_path: str):
     save_interval = lora_cfg["training"]["checkpoint_interval"]
     vram_ceiling = float(lora_cfg["training"].get("vram_limit_gb", 13.0))
 
+    if start_step >= max_steps:
+        extended_by = 500
+        new_max = start_step + extended_by
+        logger.info(
+            f"Checkpoint at step {start_step} already met previous max_steps ({max_steps}). "
+            f"Auto-extending training target to {new_max} steps (+{extended_by} steps)."
+        )
+        max_steps = new_max
+
     step = start_step
     logger.info(
         f"Starting training loop: steps {step} -> {max_steps} (Save interval: {save_interval})"

@@ -24,6 +24,15 @@ def slice_audio_with_vad(
     """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    base_name = Path(input_wav).stem
+
+    # Incremental check: skip if file was already sliced
+    existing_chunks = sorted(list(out_dir.glob(f"{base_name}_seg_*.wav")))
+    if existing_chunks:
+        logger.info(
+            f"Audio file '{base_name}' already sliced into {len(existing_chunks)} chunks. Skipping slicing."
+        )
+        return [str(c) for c in existing_chunks]
 
     logger.debug(f"Slicing input: {input_wav} -> output_dir: {output_dir}")
 
