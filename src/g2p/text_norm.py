@@ -6,8 +6,11 @@ from pythainlp.soundex import lk82
 from pythainlp.util import normalize, num_to_thaiword
 
 from src.utils.guards import validate_thai_tone
+from src.utils.logger import setup_logger
 
-# Tone mappings in Thai:
+logger = setup_logger("g2p_norm")
+
+# Explicit Tone mappings in Thai:
 # 0: Mid (สามัญ)
 # 1: Low (เอก)
 # 2: Falling (โท)
@@ -21,13 +24,36 @@ TONE_MARKS_DICT = {
     "\u0e4b": "4",  # ไม้จัตวา
 }
 
+COMMON_TECH_ACRONYMS = {
+    "AI": "เอไอ",
+    "TTS": "ทีทีเอส",
+    "GPU": "จีพียู",
+    "CPU": "ซีพียู",
+    "API": "เอพีไอ",
+    "URL": "ยูอาร์แอล",
+    "VRAM": "วีแรม",
+    "RAM": "แรม",
+    "ONNX": "ออนนิกซ์",
+}
+
 
 def normalize_thai_text(text: str) -> str:
     """Standardizes Thai text:
 
+    - Expands English technical abbreviations to Thai pronunciation.
     - Expands numeric digits into Thai spoken words.
     - Normalizes duplicate spaces, broken vowel combinations, and punctuation.
     """
+    if not text or not text.strip():
+        return ""
+
+    logger.debug(f"Normalizing raw text: '{text}'")
+
+    # Expand technical acronyms
+    for acronym, replacement in COMMON_TECH_ACRONYMS.items():
+        text = re.sub(rf"\b{acronym}\b", replacement, text, flags=re.IGNORECASE)
+
+    # Unicode normalization for Thai vowels
     text = normalize(text)
 
     # Convert digits to spoken Thai words
@@ -37,9 +63,11 @@ def normalize_thai_text(text: str) -> str:
 
     text = re.sub(r"\d+", replace_num, text)
 
-    # Clean punctuation
-    text = re.sub(r"[!?,:;\"'()\[\]{}]+", " ", text)
+    # Remove harmful punctuation while preserving speech rhythm
+    text = re.sub(r"[!?,:;\"'()\[\]{}—_+\-=@#$%^&*~`|/\\]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
+
+    logger.debug(f"Normalized text: '{text}'")
     return text
 
 
@@ -61,7 +89,11 @@ def text_to_phonemes(text: str) -> str:
     Supports Chinese loanword fallback via pypinyin.
     """
     clean_text = normalize_thai_text(text)
+    if not clean_text:
+        return ""
+
     words = word_tokenize(clean_text, engine="newmm")
+    logger.debug(f"Tokenized words: {words}")
 
     phoneme_tokens = []
 
@@ -77,23 +109,26 @@ def text_to_phonemes(text: str) -> str:
                 py_list = pypinyin.lazy_pinyin(
                     word, style=pypinyin.Style.TONE3
                 )
+                logger.debug(f"Detected Chinese token '{word}' -> Pinyin: {py_list}")
                 phoneme_tokens.extend(py_list)
                 continue
             except ImportError:
-                pass
+                logger.debug("pypinyin not installed. Continuing with raw word.")
 
         # Thai syllable phonemization with explicit tone tag
         tone_val = _extract_syllable_tone(word)
         try:
-            # Generate Romanized / Soundex base
             romanized = lk82(word).lower()
             if not romanized:
                 romanized = word
-            phoneme_tokens.append(f"{romanized}{tone_val}")
+            token_tagged = f"{romanized}{tone_val}"
+            phoneme_tokens.append(token_tagged)
         except Exception:
-            phoneme_tokens.append(f"{word}{tone_val}")
+            token_tagged = f"{word}{tone_val}"
+            phoneme_tokens.append(token_tagged)
 
     result = " ".join(phoneme_tokens)
+    logger.debug(f"Phonetic sequence: '{result}'")
     return result
 
 
@@ -102,12 +137,14 @@ def process_metadata_g2p(input_jsonl: str, output_jsonl: str) -> int:
 
     phonemes.
     """
+    logger.info(f"Processing G2P for metadata: {input_jsonl} -> {output_jsonl}")
     valid_count = 0
+
     with (
         open(input_jsonl, "r", encoding="utf-8") as f_in,
         open(output_jsonl, "w", encoding="utf-8") as f_out,
     ):
-        for line in f_in:
+        for line_no, line in enumerate(f_in, start=1):
             if not line.strip():
                 continue
             item = json.loads(line)
@@ -123,10 +160,14 @@ def process_metadata_g2p(input_jsonl: str, output_jsonl: str) -> int:
             item["tone_locked"] = is_valid_tone
 
             f_out.write(json.dumps(item, ensure_ascii=False) + "\n")
+            f_out.flush()
             valid_count += 1
 
-    print(
-        f"[G2P] Processed {valid_count} entries -> saved to {output_jsonl}"
+            if line_no % 50 == 0:
+                logger.debug(f"G2P Processed {line_no} records...")
+
+    logger.info(
+        f"G2P Transformation complete! {valid_count} entries recorded into {output_jsonl}"
     )
     return valid_count
 

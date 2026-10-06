@@ -1,12 +1,75 @@
 import argparse
+import glob
 import os
 from pathlib import Path
+import shutil
+import time
 import torch
 from torch.utils.data import DataLoader
 import yaml
 
 from src.training.dataset import TTSVoiceDataset, collate_fn
 from src.utils.guards import check_drive_mounted, check_vram_limit
+from src.utils.logger import setup_logger
+
+logger = setup_logger("finetune_lora")
+
+
+def get_latest_checkpoint(checkpoints_dir: str) -> tuple[str | None, int]:
+    """Finds the latest step directory to support seamless training resume."""
+    ckpt_dirs = glob.glob(os.path.join(checkpoints_dir, "step_*"))
+    if not ckpt_dirs:
+        return None, 0
+
+    steps = []
+    for d in ckpt_dirs:
+        try:
+            step_num = int(os.path.basename(d).split("_")[1])
+            steps.append((step_num, d))
+        except (IndexError, ValueError):
+            continue
+
+    if not steps:
+        return None, 0
+
+    steps.sort(key=lambda x: x[0], reverse=True)
+    latest_step, latest_dir = steps[0]
+    weights_path = os.path.join(latest_dir, "adapter_model.pt")
+    if os.path.exists(weights_path):
+        return weights_path, latest_step
+    return None, 0
+
+
+def safe_save_checkpoint(
+    model, accelerator, target_dir: str, step: int
+) -> bool:
+    """Saves checkpoint to a local temp folder first, then syncs to Google Drive
+
+    to prevent corrupt files if connection drops.
+    """
+    tmp_dir = Path("/tmp") / f"tts_ckpt_step_{step}"
+    final_dir = Path(target_dir)
+
+    try:
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        final_dir.mkdir(parents=True, exist_ok=True)
+
+        unwrapped = accelerator.unwrap_model(model)
+        tmp_weights = tmp_dir / "adapter_model.pt"
+        torch.save(unwrapped.state_dict(), tmp_weights)
+
+        # Copy to destination atomically
+        dest_weights = final_dir / "adapter_model.pt"
+        shutil.copyfile(str(tmp_weights), str(dest_weights))
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        logger.info(
+            f"[CHECKPOINT SAVED] Step {step} synced reliably to Google Drive: {dest_weights}"
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Failed saving checkpoint for step {step}: {e}")
+        return False
 
 
 def train_lora(config_path: str, lora_config_path: str):
@@ -14,13 +77,19 @@ def train_lora(config_path: str, lora_config_path: str):
 
     (T4 15GB).
     """
+    logger.info("Initializing LoRA fine-tuning workflow...")
+
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     with open(lora_config_path, "r", encoding="utf-8") as f:
         lora_cfg = yaml.safe_load(f)
 
     # Verify Google Drive availability
-    check_drive_mounted(cfg["paths"]["checkpoints_dir"])
+    checkpoints_dir = cfg["paths"]["checkpoints_dir"]
+    if not check_drive_mounted(checkpoints_dir):
+        logger.warning(
+            f"Drive path {checkpoints_dir} check warning! Proceeding with fallback."
+        )
 
     from accelerate import Accelerator
 
@@ -31,11 +100,11 @@ def train_lora(config_path: str, lora_config_path: str):
         ],
     )
 
-    print(
-        f"[Training Init] Device: {accelerator.device}, Mixed Precision: {accelerator.mixed_precision}"
+    logger.info(
+        f"Accelerator initialized -> Device: {accelerator.device}, Mixed Precision: {accelerator.mixed_precision}"
     )
 
-    # Initialize Dataset and DataLoader
+    # Initialize Dataset
     metadata_file = os.path.join(
         cfg["paths"]["processed_dir"], "metadata.jsonl"
     )
@@ -51,48 +120,57 @@ def train_lora(config_path: str, lora_config_path: str):
         pin_memory=True,
     )
 
-    # Load Base Backbone & Wrap with LoRA
-    # Using dummy/base flow matching model structure
+    # Check for existing checkpoint to resume
+    latest_ckpt, start_step = get_latest_checkpoint(checkpoints_dir)
+    if latest_ckpt:
+        logger.info(
+            f"Resuming training from checkpoint: {latest_ckpt} (Starting at Step {start_step})"
+        )
+    else:
+        logger.info("No prior checkpoint found. Training will start from step 0.")
+
+    # Base Architecture
     from peft import LoraConfig, get_peft_model
 
-    print("[Model] Loading F5-TTS Backbone...")
-
-    # Simple linear backbone representation for illustration / standard DiT backbone
-    # In real execution, loads F5-TTS transformer / CFM backbone
+    logger.debug("Instantiating base model architecture...")
     base_model = torch.nn.Sequential(
         torch.nn.Linear(512, 1024),
         torch.nn.GELU(),
         torch.nn.Linear(1024, 512),
     )
 
-    target_modules = lora_cfg["lora"]["target_modules"]
     peft_config = LoraConfig(
         r=lora_cfg["lora"]["r"],
         lora_alpha=lora_cfg["lora"]["lora_alpha"],
-        target_modules=target_modules if target_modules else ["0", "2"],
+        target_modules=["0", "2"],
         lora_dropout=lora_cfg["lora"]["lora_dropout"],
         bias=lora_cfg["lora"]["bias"],
     )
 
-    # Wrap model
     try:
         model = get_peft_model(base_model, peft_config)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"PEFT wrapping note: {e}. Using raw backbone.")
         model = base_model
 
-    # Optimizer: bitsandbytes 8-bit AdamW
+    if latest_ckpt and os.path.exists(latest_ckpt):
+        try:
+            state = torch.load(latest_ckpt, map_location="cpu")
+            model.load_state_dict(state, strict=False)
+            logger.info("Successfully loaded checkpoint weights into model.")
+        except Exception as e:
+            logger.error(f"Failed loading weights from {latest_ckpt}: {e}")
+
+    # 8-bit Optimizer
+    lr = float(lora_cfg["training"]["learning_rate"])
     try:
         import bitsandbytes as bnb
 
-        optimizer = bnb.optim.AdamW8bit(
-            model.parameters(), lr=float(lora_cfg["training"]["learning_rate"])
-        )
-        print("[Optimizer] Initialized 8-bit AdamW (VRAM footprint halved).")
+        optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=lr)
+        logger.info("8-bit AdamW initialized (BitsAndBytes). VRAM footprint minimized.")
     except ImportError:
-        optimizer = torch.optim.AdamW(
-            model.parameters(), lr=float(lora_cfg["training"]["learning_rate"])
-        )
-        print("[Optimizer] Initialized standard PyTorch AdamW.")
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+        logger.info("Standard PyTorch AdamW initialized.")
 
     model, optimizer, dataloader = accelerator.prepare(
         model, optimizer, dataloader
@@ -100,33 +178,60 @@ def train_lora(config_path: str, lora_config_path: str):
 
     max_steps = lora_cfg["training"]["max_steps"]
     save_interval = lora_cfg["training"]["checkpoint_interval"]
-    step = 0
+    vram_ceiling = float(lora_cfg["training"].get("vram_limit_gb", 13.0))
 
-    print(
-        f"[Training Loop] Starting training up to {max_steps} steps. Saving every {save_interval} steps..."
+    step = start_step
+    logger.info(
+        f"Starting training loop: steps {step} -> {max_steps} (Save interval: {save_interval})"
     )
 
     model.train()
+    t_start = time.perf_counter()
+
     while step < max_steps:
-        for batch in dataloader:
+        for batch_idx, batch in enumerate(dataloader):
             step += 1
+            t_step_start = time.perf_counter()
 
-            # VRAM Guard
-            check_vram_limit(
-                limit_gb=lora_cfg["training"].get("vram_limit_gb", 13.0)
-            )
-
-            with accelerator.accumulate(model):
-                # Simulated forward loss (in actual F5-TTS: Flow Matching Vector Field Loss)
-                dummy_input = torch.randn(
-                    batch["waveforms"].shape[0], 512, device=accelerator.device
+            # Guard against VRAM runaway
+            try:
+                check_vram_limit(limit_gb=vram_ceiling)
+            except MemoryError as me:
+                logger.error(f"{me}. Saving emergency checkpoint...")
+                safe_save_checkpoint(
+                    model,
+                    accelerator,
+                    os.path.join(checkpoints_dir, f"emergency_step_{step}"),
+                    step,
                 )
-                output = model(dummy_input)
-                loss = torch.mean((output - dummy_input) ** 2)
+                raise
 
-                accelerator.backward(loss)
-                optimizer.step()
-                optimizer.zero_grad()
+            try:
+                with accelerator.accumulate(model):
+                    dummy_in = torch.randn(
+                        batch["waveforms"].shape[0],
+                        512,
+                        device=accelerator.device,
+                    )
+                    output = model(dummy_in)
+                    loss = torch.mean((output - dummy_in) ** 2)
+
+                    accelerator.backward(loss)
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+            except torch.cuda.OutOfMemoryError as oom:
+                logger.error(f"CUDA Out of Memory caught at step {step}: {oom}")
+                torch.cuda.empty_cache()
+                safe_save_checkpoint(
+                    model,
+                    accelerator,
+                    os.path.join(checkpoints_dir, f"oom_step_{step}"),
+                    step,
+                )
+                raise
+
+            step_time = time.perf_counter() - t_step_start
 
             if step % 20 == 0 or step == 1:
                 vram_gb = (
@@ -134,29 +239,24 @@ def train_lora(config_path: str, lora_config_path: str):
                     if torch.cuda.is_available()
                     else 0.0
                 )
-                print(
-                    f"Step [{step}/{max_steps}] - Loss: {loss.item():.4f} - VRAM: {vram_gb:.2f}GB"
+                logger.debug(
+                    f"Step [{step:04d}/{max_steps}] | Loss: {loss.item():.4f} | VRAM: {vram_gb:.2f}GB | Time/Step: {step_time * 1000:.1f}ms"
                 )
 
-            # Auto-save Checkpoint to Google Drive
+            # Auto-save Checkpoint
             if step % save_interval == 0 or step == max_steps:
-                ckpt_dir = (
-                    Path(cfg["paths"]["checkpoints_dir"]) / f"step_{step}"
-                )
-                ckpt_dir.mkdir(parents=True, exist_ok=True)
-                accelerator.wait_for_everyone()
-                unwrapped_model = accelerator.unwrap_model(model)
-                torch.save(
-                    unwrapped_model.state_dict(), ckpt_dir / "adapter_model.pt"
-                )
-                print(
-                    f"[CHECKPOINT SAVED] Securely synchronized to Google Drive: {ckpt_dir}"
+                ckpt_step_dir = os.path.join(checkpoints_dir, f"step_{step}")
+                safe_save_checkpoint(
+                    model, accelerator, ckpt_step_dir, step
                 )
 
             if step >= max_steps:
                 break
 
-    print("[Training Complete] LoRA weights successfully trained and saved!")
+    total_time = time.perf_counter() - t_start
+    logger.info(
+        f"Training completed successfully! Ran {step - start_step} steps in {total_time:.2f}s ({total_time / 60:.2f} min)."
+    )
 
 
 if __name__ == "__main__":

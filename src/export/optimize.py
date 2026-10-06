@@ -1,6 +1,12 @@
 import argparse
 import os
 from pathlib import Path
+import shutil
+import time
+
+from src.utils.logger import setup_logger
+
+logger = setup_logger("export_optimize")
 
 
 def optimize_and_quantize(input_onnx: str, output_onnx: str) -> str:
@@ -8,45 +14,78 @@ def optimize_and_quantize(input_onnx: str, output_onnx: str) -> str:
 
     2. Applies Dynamic INT8 Quantization for lightweight CPU deployment.
     """
+    t0 = time.perf_counter()
+    if not os.path.exists(input_onnx):
+        raise FileNotFoundError(f"Input ONNX model not found: {input_onnx}")
+
+    initial_size_mb = os.path.getsize(input_onnx) / (1024 * 1024)
+    logger.info(
+        f"Optimizing ONNX model: {input_onnx} (Original size: {initial_size_mb:.2f} MB)"
+    )
+
     slim_path = str(Path(input_onnx).with_suffix(".slim.onnx"))
 
-    # Step 1: OnnxSlim graph optimization
+    # Step 1: OnnxSlim graph pruning
     try:
         import onnxslim
 
-        print(f"[Optimize] Running onnxslim graph pruning on {input_onnx}...")
+        logger.debug(f"Executing onnxslim pruning on {input_onnx}...")
         onnxslim.slim(input_onnx, slim_path)
+        slim_size_mb = os.path.getsize(slim_path) / (1024 * 1024)
+        logger.info(
+            f"OnnxSlim pruned graph -> {slim_path} ({slim_size_mb:.2f} MB, -{(1 - slim_size_mb / initial_size_mb) * 100:.1f}%)"
+        )
         source_model = slim_path
     except ImportError:
-        print("[WARN] onnxslim not found. Skipping pruning.")
+        logger.warning("onnxslim not installed. Proceeding with raw graph.")
+        source_model = input_onnx
+    except Exception as e:
+        logger.error(
+            f"OnnxSlim encountered error: {e}. Falling back to unpruned model."
+        )
         source_model = input_onnx
 
     # Step 2: Dynamic INT8 Quantization
+    Path(output_onnx).parent.mkdir(parents=True, exist_ok=True)
     try:
         from onnxruntime.quantization import QuantType, quantize_dynamic
 
-        print(f"[Quantize] Applying INT8 Quantization -> {output_onnx}...")
+        logger.debug(
+            f"Applying Dynamic INT8 Quantization (weights: QInt8) -> {output_onnx}..."
+        )
         quantize_dynamic(
             model_input=source_model,
             model_output=output_onnx,
             weight_type=QuantType.QInt8,
         )
+        logger.info("Dynamic INT8 quantization completed successfully.")
     except ImportError:
-        print("[WARN] onnxruntime.quantization not found. Copying model.")
-        import shutil
-
+        logger.warning(
+            "onnxruntime.quantization not available. Copying source model as output."
+        )
+        shutil.copyfile(source_model, output_onnx)
+    except Exception as e:
+        logger.error(f"Quantization failed: {e}. Copying unquantized graph.")
         shutil.copyfile(source_model, output_onnx)
 
-    # Size check
+    # Size and latency report
     if os.path.exists(output_onnx):
-        size_mb = os.path.getsize(output_onnx) / (1024 * 1024)
-        print(f"[Export] Quantized ONNX Model Size: {size_mb:.2f} MB")
-        if size_mb > 300.0:
-            print(
-                f"[WARN] Model size {size_mb:.2f}MB exceeds 300MB target threshold."
+        final_size_mb = os.path.getsize(output_onnx) / (1024 * 1024)
+        elapsed = time.perf_counter() - t0
+        reduction_pct = (1.0 - (final_size_mb / initial_size_mb)) * 100.0
+
+        logger.info(
+            f"Optimization finished in {elapsed:.2f}s | Final Model: {output_onnx} ({final_size_mb:.2f} MB, Total Reduction: {reduction_pct:.1f}%)"
+        )
+
+        if final_size_mb > 300.0:
+            logger.warning(
+                f"[GUARD ALERT] Model size {final_size_mb:.2f}MB exceeds 300MB target budget!"
             )
         else:
-            print("[PASS] Model size satisfies low-spec deployment budget.")
+            logger.info(
+                f"[GUARD PASS] Model size {final_size_mb:.2f}MB conforms to target budget (< 300MB)."
+            )
 
     return output_onnx
 

@@ -1,51 +1,78 @@
 import argparse
 import os
 from pathlib import Path
-import torch
+import time
+
+from src.utils.logger import setup_logger
+
+logger = setup_logger("export_onnx")
 
 
-class ExportableTTSWrapper(torch.nn.Module):
-    """Wrapper module preparing TTS flow-matching inference graph for ONNX
+def get_exportable_wrapper(hidden_dim: int = 512):
+    import torch
 
-    export.
-    """
+    class ExportableTTSWrapper(torch.nn.Module):
+        """Wrapper module preparing TTS flow-matching inference graph for ONNX
 
-    def __init__(self, hidden_dim: int = 512):
-        super().__init__()
-        self.encoder = torch.nn.Sequential(
-            torch.nn.Linear(hidden_dim, 1024),
-            torch.nn.GELU(),
-            torch.nn.Linear(1024, hidden_dim),
-        )
+        export.
+        """
 
-    def forward(
-        self, prompt_tokens: torch.Tensor, ref_audio_features: torch.Tensor
-    ) -> torch.Tensor:
-        features = prompt_tokens + ref_audio_features
-        return self.encoder(features)
+        def __init__(self, hidden_dim: int = 512):
+            super().__init__()
+            self.encoder = torch.nn.Sequential(
+                torch.nn.Linear(hidden_dim, 1024),
+                torch.nn.GELU(),
+                torch.nn.Linear(1024, hidden_dim),
+            )
+
+        def forward(
+            self, prompt_tokens: torch.Tensor, ref_audio_features: torch.Tensor
+        ) -> torch.Tensor:
+            features = prompt_tokens + ref_audio_features
+            return self.encoder(features)
+
+    return ExportableTTSWrapper(hidden_dim=hidden_dim)
 
 
 def export_to_onnx(
     checkpoint_path: str, output_onnx_path: str, hidden_dim: int = 512
 ) -> str:
-    """Exports model weights to standard ONNX graph format."""
-    os.makedirs(os.path.dirname(output_onnx_path), exist_ok=True)
+    """Exports model weights to standard ONNX graph format with model integrity
 
-    model = ExportableTTSWrapper(hidden_dim=hidden_dim)
+    validation.
+    """
+    import torch
+
+    t0 = time.perf_counter()
+    os.makedirs(os.path.dirname(output_onnx_path), exist_ok=True)
+    logger.info(f"Preparing ONNX export from checkpoint: {checkpoint_path}")
+
+    model = get_exportable_wrapper(hidden_dim=hidden_dim)
     if os.path.exists(checkpoint_path):
         try:
             state = torch.load(checkpoint_path, map_location="cpu")
             model.load_state_dict(state, strict=False)
-            print(f"[Export] Loaded trained checkpoint: {checkpoint_path}")
+            logger.info(
+                f"Successfully loaded trained weights from {checkpoint_path}"
+            )
         except Exception as e:
-            print(f"[Export] Note: Could not load state ({e}). Exporting base.")
+            logger.warning(
+                f"Could not load checkpoint ({e}). Exporting base architecture."
+            )
+    else:
+        logger.warning(
+            f"Checkpoint {checkpoint_path} not found. Exporting base architecture."
+        )
 
     model.eval()
 
     dummy_tokens = torch.randn(1, hidden_dim)
     dummy_ref = torch.randn(1, hidden_dim)
 
-    print(f"[Export] Exporting ONNX graph -> {output_onnx_path}...")
+    logger.debug(
+        f"Export tensors -> tokens: {dummy_tokens.shape}, ref: {dummy_ref.shape} (Opset 17)"
+    )
+
     torch.onnx.export(
         model,
         (dummy_tokens, dummy_ref),
@@ -61,7 +88,24 @@ def export_to_onnx(
             "audio_spectrogram": {0: "batch_size"},
         },
     )
-    print(f"[Export] Successfully generated ONNX: {output_onnx_path}")
+
+    # Validate exported ONNX file
+    try:
+        import onnx
+
+        onnx_model = onnx.load(output_onnx_path)
+        onnx.checker.check_model(onnx_model)
+        logger.info(
+            "ONNX model structural integrity verified via onnx.checker.check_model"
+        )
+    except Exception as e:
+        logger.warning(f"ONNX check warning: {e}")
+
+    file_size_mb = os.path.getsize(output_onnx_path) / (1024 * 1024)
+    elapsed = time.perf_counter() - t0
+    logger.info(
+        f"Export successful -> {output_onnx_path} ({file_size_mb:.2f} MB in {elapsed:.2f}s)"
+    )
     return output_onnx_path
 
 

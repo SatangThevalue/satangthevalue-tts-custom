@@ -1,11 +1,13 @@
 import argparse
 import os
 from pathlib import Path
+import time
 import soundfile as sf
-import torch
-import torchaudio
 
 from src.utils.guards import calculate_snr
+from src.utils.logger import setup_logger
+
+logger = setup_logger("audio_enhance")
 
 
 def enhance_audio_file(
@@ -20,18 +22,44 @@ def enhance_audio_file(
     2. Extends frequency bandwidth (12kHz - 24kHz) for crisp highs.
     3. Resamples to uniform mono 24kHz.
     """
+    t0 = time.perf_counter()
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Load audio
-    waveform, sr = torchaudio.load(input_path)
+    try:
+        import torch
+        import torchaudio
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        torch = None
+        torchaudio = None
+        device = "cpu"
+
+    logger.debug(f"Enhancing: {input_path} (Target SR: {target_sr}, Device: {device})")
+
+    # Load audio safely
+    try:
+        waveform, sr = torchaudio.load(input_path)
+    except Exception as e:
+        logger.error(f"Failed loading audio file {input_path}: {e}")
+        raise
+
+    orig_duration = waveform.shape[1] / sr
+    logger.debug(
+        f"Input specs -> Channels: {waveform.shape[0]}, Sample Rate: {sr}Hz, Duration: {orig_duration:.2f}s"
+    )
+
     if waveform.shape[0] > 1:
-        waveform = torch.mean(waveform, dim=0, keepdim=True)  # Convert to mono
+        logger.debug("Downmixing multi-channel audio to mono...")
+        waveform = torch.mean(waveform, dim=0, keepdim=True)
+
+    # Initial SNR Check
+    raw_snr, _ = calculate_snr(waveform.squeeze(0).numpy())
+    logger.debug(f"Pre-enhancement SNR: {raw_snr:.2f} dB")
 
     try:
         from resemble_enhance.enhancer.inference import denoise, enhance
 
-        # Resemble Enhance operates at 44.1kHz internally
+        logger.debug("Resemble Enhance backend detected. Preparing 44.1kHz tensors...")
         if sr != 44100:
             resampler = torchaudio.transforms.Resample(
                 orig_freq=sr, new_freq=44100
@@ -42,10 +70,12 @@ def enhance_audio_file(
 
         with torch.no_grad():
             if denoise_only:
+                logger.debug("Running denoise-only mode...")
                 enhanced_wav, _ = denoise(
                     waveform_44k.squeeze(0), 44100, device=device
                 )
             else:
+                logger.debug("Running full enhancement (denoise + bandwidth extension)...")
                 enhanced_wav, _ = enhance(
                     waveform_44k.squeeze(0),
                     44100,
@@ -57,16 +87,14 @@ def enhance_audio_file(
                 )
 
         enhanced_wav = enhanced_wav.cpu().unsqueeze(0)
-        # Resample to target sample rate (default 24000Hz)
         resampler_final = torchaudio.transforms.Resample(
             orig_freq=44100, new_freq=target_sr
         )
         final_wav = resampler_final(enhanced_wav).squeeze(0).numpy()
 
     except ImportError:
-        # Fallback if resemble-enhance is not compiled in environment
-        print(
-            "[WARN] resemble-enhance not found. Using native torch high-pass & resampler fallback."
+        logger.warning(
+            "resemble-enhance package not found. Executing high-pass and high-quality sinc resample fallback."
         )
         if sr != target_sr:
             resampler = torchaudio.transforms.Resample(
@@ -74,41 +102,56 @@ def enhance_audio_file(
             )
             waveform = resampler(waveform)
         final_wav = waveform.squeeze(0).numpy()
+    except Exception as e:
+        logger.error(f"Error during Resemble Enhance model execution: {e}. Falling back to original waveform.")
+        if sr != target_sr:
+            resampler = torchaudio.transforms.Resample(
+                orig_freq=sr, new_freq=target_sr
+            )
+            waveform = resampler(waveform)
+        final_wav = waveform.squeeze(0).numpy()
 
-    # SNR Check
-    snr_db, is_clean = calculate_snr(final_wav)
-    print(f"[{os.path.basename(input_path)}] Processed SNR: {snr_db:.2f} dB")
+    # Post-enhancement SNR Check
+    post_snr, passes_snr = calculate_snr(final_wav)
+    elapsed = time.perf_counter() - t0
+
+    logger.debug(
+        f"Post-enhancement SNR: {post_snr:.2f} dB (Change: {post_snr - raw_snr:+.2f} dB) | Time: {elapsed:.2f}s"
+    )
 
     sf.write(output_path, final_wav, target_sr, subtype="PCM_16")
+    logger.info(f"Saved enhanced audio -> {output_path} ({orig_duration:.2f}s)")
     return output_path
 
 
 def batch_enhance(
     raw_dir: str, enhanced_dir: str, target_sr: int = 24000
 ) -> list[str]:
-    """Iterates through raw audio directory and enhances all files."""
+    """Iterates through raw audio directory and enhances all files safely."""
     raw_path = Path(raw_dir)
     out_path = Path(enhanced_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    supported_exts = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac"}
+    supported_exts = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".webm"}
     audio_files = [
         f for f in raw_path.rglob("*") if f.suffix.lower() in supported_exts
     ]
-    print(f"[Enhance] Found {len(audio_files)} raw audio files to process.")
+    logger.info(f"Discovered {len(audio_files)} audio files in {raw_dir}")
 
     results = []
-    for file in audio_files:
+    for idx, file in enumerate(audio_files):
         rel_name = file.stem + ".wav"
         dest_file = out_path / rel_name
+        logger.debug(f"[{idx + 1}/{len(audio_files)}] Processing file: {file.name}")
         try:
             enhanced = enhance_audio_file(
                 str(file), str(dest_file), target_sr=target_sr
             )
             results.append(enhanced)
         except Exception as e:
-            print(f"[ERROR] Failed enhancing {file.name}: {e}")
+            logger.error(f"Failed processing {file.name}: {e}", exc_info=True)
 
+    logger.info(f"Batch enhance finished. Successfully processed {len(results)}/{len(audio_files)} files.")
     return results
 
 
