@@ -1,0 +1,22 @@
+training:
+  backbone: "f5-tts"
+  mixed_precision: "fp16"
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-4
+  optimizer: "AdamW8bit"
+  max_steps: 2500
+  checkpoint_interval: 200
+  vram_limit_gb: 13.0
+
+lora:
+  r: 16
+  lora_alpha: 32
+  target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
+  lora_dropout: 0.05
+  bias: "none"
+
+export:
+  opset_version: 17
+  dynamic_axes: true
+  quantization: "int8"

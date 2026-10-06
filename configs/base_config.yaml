@@ -1,0 +1,36 @@
+project_name: "satangthevalue-tts-custom"
+
+paths:
+  raw_dir: "/content/drive/MyDrive/tts-project/01_raw"
+  processed_dir: "/content/drive/MyDrive/tts-project/02_processed"
+  checkpoints_dir: "/content/drive/MyDrive/tts-project/03_checkpoints"
+  onnx_dir: "/content/drive/MyDrive/tts-project/04_onnx_exports"
+  local_cache_dir: "/content/dataset_local"
+
+audio:
+  sampling_rate: 24000
+  channels: 1
+  min_duration_sec: 3.0
+  max_duration_sec: 10.0
+  vad_pad_start_ms: 150
+  vad_pad_end_ms: 200
+  snr_threshold_db: 25.0
+
+asr:
+  model_size: "large-v3"
+  language: "th"
+  beam_size: 5
+  min_logprob: -0.5
+
+g2p:
+  engine: "pythainlp"
+  phonemizer_backend: "espeak"
+  enable_tone_tags: true
+  enable_pinyin_fallback: true
+
+mastering:
+  highpass_cutoff_hz: 80
+  compressor_threshold_db: -16.0
+  compressor_ratio: 2.5
+  limiter_threshold_db: -1.0
+  loudness_target_lufs: -16.0

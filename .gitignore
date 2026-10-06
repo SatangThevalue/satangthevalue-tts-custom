@@ -1,0 +1,50 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments & Package Managers
+.venv/
+env/
+venv/
+ENV/
+.env
+.env.*
+!.env.example
+uv.lock
+
+# Audio & Dataset caches (Keep repo lightweight)
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.tar
+*.zip
+*.pt
+*.pth
+*.bin
+*.onnx
+*.onnx.data
+*.safetensors
+
+# Data & Output directories
+data/
+datasets/
+raw_audio/
+processed_audio/
+checkpoints/
+runs/
+logs/
+exports/
+temp/
+
+# Google Colab & Jupyter
+.ipynb_checkpoints/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
