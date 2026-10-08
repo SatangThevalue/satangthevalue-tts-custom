@@ -34,3 +34,10 @@ mastering:
   compressor_ratio: 2.5
   limiter_threshold_db: -1.0
   loudness_target_lufs: -16.0
+  tube_warmth_drive: 1.12
+  room_reverb_wet: 0.04
+  comfort_noise_db: -54.0
+  deess_freq_hz: 6800
+  deess_gain_db: -2.5
+  warmth_lowshelf_hz: 220
+  warmth_lowshelf_gain_db: 1.5
