@@ -103,7 +103,7 @@ def run_master_pipeline_tests():
         init_registry_db(db_path)
 
         url = "https://www.youtube.com/watch?v=sample123"
-        speaker = "thanapol"
+        speaker = "satang"
         assert not is_already_registered(url, speaker, db_path)
 
         item_id = record_media_item(
@@ -136,7 +136,7 @@ def run_master_pipeline_tests():
                 "normalized_text": "สวัสดีครับ วันนี้มีประชุม",
                 "phonemes": "ซ3 ก5 ว4 ม0 ป3",
                 "duration": 3.0,
-                "speaker": "thanapol",
+                "speaker": "satang",
             }) + "\n")
             f.write(json.dumps({
                 "audio_path": chunk_a,
@@ -144,10 +144,10 @@ def run_master_pipeline_tests():
                 "normalized_text": "สวัสดีครับ การทดสอบระบบ",
                 "phonemes": "ซ3 ก5 ก0 ท0 ซ5 ร0 บ0",
                 "duration": 3.0,
-                "speaker": "thanapol",
+                "speaker": "satang",
             }) + "\n")
 
-        audit_res = audit_speaker_dataset(metadata_path=meta_file, speaker_id="thanapol", min_duration_minutes=0.05)
+        audit_res = audit_speaker_dataset(metadata_path=meta_file, speaker_id="satang", min_duration_minutes=0.05)
         assert audit_res["total_chunks"] == 2
         assert audit_res["total_words"] > 0
         assert "สวัสดีครับ" in [w[0] for w in audit_res["top_repeated_words"]]
@@ -158,8 +158,8 @@ def run_master_pipeline_tests():
         try:
             import torch
             from src.training.dataset import TTSVoiceDataset
-            ds_thanapol = TTSVoiceDataset(metadata_path=meta_file, speaker_id="thanapol")
-            assert len(ds_thanapol) == 2, "Should load 2 records for thanapol"
+            ds_satang = TTSVoiceDataset(metadata_path=meta_file, speaker_id="satang")
+            assert len(ds_satang) == 2, "Should load 2 records for satang"
 
             try:
                 ds_other = TTSVoiceDataset(metadata_path=meta_file, speaker_id="other_person")
