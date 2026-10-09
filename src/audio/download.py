@@ -1,4 +1,5 @@
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 from pathlib import Path
 import re
@@ -17,14 +18,78 @@ def sanitize_filename(name: str) -> str:
     return clean[:60] if clean else "audio_track"
 
 
+def _download_single_task(
+    url_str: str,
+    target_dir: Path,
+    ydl_opts: Dict[str, Any],
+    speaker_id: str,
+) -> Dict[str, Any]:
+    """Worker task executing individual URL extraction and audio conversion."""
+    import yt_dlp
+
+    t0 = time.perf_counter()
+    logger.info(f"[PARALLEL TASK] Initiating download: {url_str}")
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore
+            info = ydl.extract_info(url_str, download=True)
+            if not info:
+                logger.warning(
+                    f"Could not extract info from URL: {url_str} (May require login or is private)"
+                )
+                return {
+                    "url": url_str,
+                    "speaker_id": speaker_id,
+                    "status": "error",
+                    "error": "No info extracted",
+                }
+
+            title = str(info.get("title") or f"track_{int(time.time())}")
+            duration = info.get("duration", 0)
+            video_id = str(info.get("id") or "unknown")
+            sanitized_title = sanitize_filename(title)
+            expected_wav = target_dir / f"{sanitized_title}_{video_id}.wav"
+
+            # Check if file was extracted
+            if not expected_wav.exists():
+                candidates = list(target_dir.glob(f"*{video_id}*.wav"))
+                if candidates:
+                    expected_wav = candidates[0]
+
+            elapsed = time.perf_counter() - t0
+            logger.info(
+                f"[DOWNLOAD FINISHED] '{title}' ({duration}s) -> {expected_wav.name} (Elapsed: {elapsed:.1f}s)"
+            )
+
+            return {
+                "url": url_str,
+                "title": title,
+                "video_id": video_id,
+                "duration_sec": duration,
+                "speaker_id": speaker_id,
+                "output_path": str(expected_wav),
+                "status": "success",
+            }
+
+    except Exception as e:
+        logger.error(f"[DOWNLOAD ERROR] Failed {url_str}: {e}")
+        return {
+            "url": url_str,
+            "speaker_id": speaker_id,
+            "status": "error",
+            "error": str(e),
+        }
+
+
 def download_media_audio(
     urls: List[str],
     output_dir: str = "/content/drive/MyDrive/tts-project/01_raw",
     speaker_id: str = "default",
     cookies_file: Optional[str] = None,
     target_sr: int = 24000,
+    max_workers: int = 3,
 ) -> List[Dict[str, Any]]:
-    """Downloads audio streams from YouTube, Facebook, and Instagram.
+    """Downloads audio streams from YouTube, Facebook, and Instagram concurrently.
     Converts directly to uniform 24kHz Mono 16-bit PCM WAV in 01_raw/{speaker_id}/.
     """
     try:
@@ -36,9 +101,14 @@ def download_media_audio(
     target_dir = Path(output_dir) / speaker_id
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    results = []
+    clean_urls = [u.strip() for u in urls if u.strip() and not u.strip().startswith("#")]
+    if not clean_urls:
+        logger.warning("No valid URLs provided to download.")
+        return []
+
+    workers = min(max_workers, len(clean_urls))
     logger.info(
-        f"Starting download of {len(urls)} URLs for Speaker: '{speaker_id}' -> {target_dir}"
+        f"Starting parallel download of {len(clean_urls)} URLs (Workers: {workers}) for Speaker: '{speaker_id}' -> {target_dir}"
     )
 
     ydl_opts: Dict[str, Any] = {
@@ -64,68 +134,37 @@ def download_media_audio(
         logger.info(f"Using cookies file: {cookies_file}")
         ydl_opts["cookiefile"] = cookies_file
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore
-        for idx, url in enumerate(urls, start=1):
-            url_str = url.strip()
-            if not url_str or url_str.startswith("#"):
-                continue
+    results: List[Dict[str, Any]] = []
 
-            logger.info(f"[{idx}/{len(urls)}] Processing URL: {url_str}")
-            t0 = time.perf_counter()
+    if workers <= 1:
+        for url_str in clean_urls:
+            res = _download_single_task(url_str, target_dir, ydl_opts, speaker_id)
+            results.append(res)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_url = {
+                executor.submit(_download_single_task, url, target_dir, ydl_opts, speaker_id): url
+                for url in clean_urls
+            }
+            for future in as_completed(future_to_url):
+                res = future.result()
+                results.append(res)
 
-            try:
-                info = ydl.extract_info(url_str, download=True)
-                if not info:
-                    logger.warning(f"Could not extract info from URL: {url_str} (May require login or is private)")
-                    continue
-
-                title = str(info.get("title") or f"track_{int(time.time())}")
-                duration = info.get("duration", 0)
-                video_id = str(info.get("id") or "unknown")
-                sanitized_title = sanitize_filename(title)
-                expected_wav = target_dir / f"{sanitized_title}_{video_id}.wav"
-
-                # Check if file was extracted
-                if not expected_wav.exists():
-                    # Fallback lookup in directory for newly created wav
-                    candidates = list(target_dir.glob(f"*{video_id}*.wav"))
-                    if candidates:
-                        expected_wav = candidates[0]
-
-                elapsed = time.perf_counter() - t0
-                logger.info(
-                    f"Successfully fetched: '{title}' ({duration}s) -> {expected_wav.name} (Elapsed: {elapsed:.1f}s)"
-                )
-
-                results.append({
-                    "url": url_str,
-                    "title": title,
-                    "video_id": video_id,
-                    "duration_sec": duration,
-                    "speaker_id": speaker_id,
-                    "output_path": str(expected_wav),
-                    "status": "success",
-                })
-            except Exception as e:
-                logger.error(f"Error downloading {url_str}: {e}")
-                results.append({
-                    "url": url_str,
-                    "speaker_id": speaker_id,
-                    "status": "error",
-                    "error": str(e),
-                })
-
-    logger.info(f"Download batch finished: {len(results)} items processed.")
+    success_count = sum(1 for r in results if r.get("status") == "success")
+    logger.info(
+        f"Parallel download batch finished: {success_count}/{len(results)} items downloaded successfully."
+    )
     return results
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Social Media Audio Ingestion (YT, FB, IG)")
+    parser = argparse.ArgumentParser(description="Parallel Social Media Audio Ingestion (YT, FB, IG)")
     parser.add_argument("--urls", nargs="+", help="One or more media URLs")
     parser.add_argument("--url-file", type=str, help="Text file containing URLs (one per line)")
     parser.add_argument("--out-dir", type=str, default="/content/drive/MyDrive/tts-project/01_raw")
     parser.add_argument("--speaker-id", type=str, default="default", help="Speaker identifier")
     parser.add_argument("--cookies", type=str, help="Path to cookies.txt (optional)")
+    parser.add_argument("--workers", type=int, default=3, help="Number of concurrent download threads")
     args = parser.parse_args()
 
     url_list = []
@@ -143,4 +182,5 @@ if __name__ == "__main__":
             output_dir=args.out_dir,
             speaker_id=args.speaker_id,
             cookies_file=args.cookies,
+            max_workers=args.workers,
         )
