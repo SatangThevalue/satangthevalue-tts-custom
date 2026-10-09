@@ -125,6 +125,23 @@ def run_master_pipeline_tests():
         assert summary[0]["count_enhanced"] == 1
         logger.info(f"Registry Summary verified: {summary}")
 
+        # Test Model Version Control
+        from src.utils.registry import register_model_version, list_model_versions
+        v_id = register_model_version(
+            speaker_id=speaker,
+            version_tag="v1.0",
+            checkpoint_step=2500,
+            onnx_path=os.path.join(tmp_dir, "model.onnx"),
+            quant_onnx_path=os.path.join(tmp_dir, "model_quant.onnx"),
+            notes="First test release",
+            db_path=db_path,
+        )
+        assert v_id > 0
+        versions = list_model_versions(speaker_id=speaker, db_path=db_path)
+        assert len(versions) == 1
+        assert versions[0]["version_tag"] == "v1.0"
+        logger.info(f"Model version control verified: {versions[0]['version_tag']} (step {versions[0]['checkpoint_step']})")
+
         # 5. Test Speaker Inspector & Linguistic Analytics
         logger.info("[Test 5/6] Testing Speaker Inspector & Linguistic Analytics...")
         meta_file = os.path.join(tmp_dir, "metadata.jsonl")

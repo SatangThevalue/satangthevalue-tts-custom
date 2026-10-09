@@ -20,7 +20,7 @@ def get_db_connection(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
 
 
 def init_registry_db(db_path: str = DEFAULT_DB_PATH) -> None:
-    """Initializes schema for tracking media ingestion, duration, and pipeline status."""
+    """Initializes schema for tracking media ingestion, duration, and model versions."""
     with get_db_connection(db_path) as conn:
         conn.execute(
             """
@@ -39,6 +39,24 @@ def init_registry_db(db_path: str = DEFAULT_DB_PATH) -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_speaker ON media_registry(speaker_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_source ON media_registry(source_identifier);")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS model_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                speaker_id TEXT NOT NULL,
+                version_tag TEXT NOT NULL,
+                checkpoint_step INTEGER NOT NULL,
+                onnx_path TEXT NOT NULL,
+                quant_onnx_path TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(speaker_id, version_tag)
+            );
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mv_speaker ON model_versions(speaker_id);")
     logger.debug(f"Registry SQLite database initialized at: {db_path}")
 
 
@@ -132,6 +150,58 @@ def get_speaker_summary(
         query += " WHERE speaker_id = ?"
         params.append(speaker_id)
     query += " GROUP BY speaker_id ORDER BY speaker_id ASC;"
+
+    with get_db_connection(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+# ==================== Model Version Control ====================
+
+def register_model_version(
+    speaker_id: str,
+    version_tag: str,
+    checkpoint_step: int,
+    onnx_path: str,
+    quant_onnx_path: str = "",
+    notes: str = "",
+    db_path: str = DEFAULT_DB_PATH,
+) -> int:
+    """Registers or updates a trained model version tag in registry database."""
+    init_registry_db(db_path)
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO model_versions (speaker_id, version_tag, checkpoint_step, onnx_path, quant_onnx_path, notes, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(speaker_id, version_tag) DO UPDATE SET
+                checkpoint_step = excluded.checkpoint_step,
+                onnx_path = excluded.onnx_path,
+                quant_onnx_path = excluded.quant_onnx_path,
+                notes = excluded.notes,
+                is_active = 1;
+            """,
+            (speaker_id, version_tag, checkpoint_step, onnx_path, quant_onnx_path, notes),
+        )
+        return cursor.lastrowid or 0
+
+
+def list_model_versions(
+    speaker_id: Optional[str] = None,
+    db_path: str = DEFAULT_DB_PATH,
+) -> List[Dict[str, Any]]:
+    """Lists all saved model versions with steps, paths, and creation timestamps."""
+    init_registry_db(db_path)
+    query = "SELECT * FROM model_versions"
+    params: List[Any] = []
+    if speaker_id:
+        query += " WHERE speaker_id = ?"
+        params.append(speaker_id)
+    query += " ORDER BY checkpoint_step DESC, created_at DESC;"
 
     with get_db_connection(db_path) as conn:
         conn.row_factory = sqlite3.Row

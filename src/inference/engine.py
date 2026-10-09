@@ -62,6 +62,11 @@ class TTSEngine:
         ref_audio_path: str | None = None,
         output_wav_path: str = "output.wav",
         enable_mastering: bool = True,
+        speed_factor: float = 1.0,
+        pitch_semitones: float = 0.0,
+        warmth_drive: float = 1.12,
+        room_reverb_wet: float = 0.04,
+        deess_gain_db: float = -2.5,
     ) -> dict:
         t0 = time.perf_counter()
         logger.info(f"Synthesizing request: '{text}'")
@@ -129,7 +134,15 @@ class TTSEngine:
         # Step 4: DSP Studio Mastering
         if enable_mastering:
             t_dsp_0 = time.perf_counter()
-            final_wav = apply_studio_mastering(raw_wav_path, output_wav_path)
+            final_wav = apply_studio_mastering(
+                raw_wav_path,
+                output_wav_path,
+                pitch_semitones=pitch_semitones,
+                speed_factor=speed_factor,
+                warmth_drive=warmth_drive,
+                room_reverb_wet=room_reverb_wet,
+                deess_gain_db=deess_gain_db,
+            )
             dsp_elapsed = (time.perf_counter() - t_dsp_0) * 1000
             logger.debug(f"DSP Mastering Chain executed in {dsp_elapsed:.1f}ms")
             # Clean up intermediate raw wav if different from target

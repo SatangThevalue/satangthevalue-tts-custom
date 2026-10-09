@@ -53,6 +53,8 @@ def apply_studio_mastering(
     deess_gain_db: float = -2.5,
     warmth_lowshelf_hz: float = 220.0,
     warmth_lowshelf_gain_db: float = 1.5,
+    pitch_semitones: float = 0.0,
+    speed_factor: float = 1.0,
 ) -> str:
     """Acoustic Realism & Studio Mastering Pipeline (100% In-Memory DSP):
 
@@ -97,10 +99,15 @@ def apply_studio_mastering(
             LowShelfFilter,
             PeakFilter,
             Pedalboard,
+            PitchShift,
             Reverb,
         )
 
-        effects = [
+        effects = []
+        if pitch_semitones != 0.0:
+            effects.append(PitchShift(semitones=pitch_semitones))
+
+        effects.extend([
             HighpassFilter(cutoff_frequency_hz=highpass_hz),
             LowShelfFilter(
                 cutoff_frequency_hz=warmth_lowshelf_hz,
@@ -118,7 +125,7 @@ def apply_studio_mastering(
                 attack_ms=10.0,
                 release_ms=100.0,
             ),
-        ]
+        ])
 
         if room_reverb_wet > 0.0:
             effects.append(
@@ -133,6 +140,21 @@ def apply_studio_mastering(
 
         board = Pedalboard(effects)
         processed_audio = board(audio_data.astype(np.float32), sr)
+
+        # Time stretch (Speed adjustment)
+        if abs(speed_factor - 1.0) > 0.02 and len(processed_audio) > 0:
+            try:
+                import librosa
+                processed_audio = librosa.effects.time_stretch(
+                    processed_audio, rate=speed_factor
+                )
+            except Exception:
+                orig_len = len(processed_audio)
+                new_len = int(orig_len / max(0.2, speed_factor))
+                indices = np.linspace(0, orig_len - 1, new_len)
+                processed_audio = np.interp(
+                    indices, np.arange(orig_len), processed_audio
+                ).astype(np.float32)
         logger.debug(
             f"Pedalboard EQ + Dynamics + Studio Reverb executed ({len(effects)} stages)"
         )
