@@ -186,7 +186,27 @@ def run_master_pipeline_tests():
         except ImportError:
             logger.info("[Test 6/6 Skipped] PyTorch not installed in VPS environment. Test will execute on Colab.")
 
-        logger.info("=== ALL 6 MASTER PIPELINE TESTS PASSED WITH 100% SUCCESS RATE ===")
+        # 7. Test Pre-Export Checkpoint Sound Preview
+        logger.info("[Test 7/7] Testing Pre-Export Checkpoint Sound Preview...")
+        from src.inference.test_checkpoint import preview_checkpoint
+        dummy_ckpt_dir = Path(tmp_dir) / "03_checkpoints" / "satang" / "step_2500"
+        dummy_ckpt_dir.mkdir(parents=True, exist_ok=True)
+        (dummy_ckpt_dir / "adapter_model.pt").write_bytes(b"MOCK_PT_WEIGHTS" * 100)
+
+        prev_res = preview_checkpoint(
+            speaker_id="satang",
+            text="สวัสดีครับ ทดสอบเสียง",
+            checkpoint_step=2500,
+            checkpoints_base_dir=str(Path(tmp_dir) / "03_checkpoints"),
+            output_wav=str(Path(tmp_dir) / "preview_out.wav"),
+            speed_factor=1.0,
+            pitch_semitones=0.0,
+        )
+        assert os.path.exists(prev_res["output_path"])
+        assert prev_res["checkpoint_step"] == 2500
+        logger.info(f"Checkpoint preview passed: {prev_res['output_path']} (duration: {prev_res['duration_sec']:.2f}s)")
+
+        logger.info("=== ALL 7 MASTER PIPELINE TESTS PASSED WITH 100% SUCCESS RATE ===")
         return True
 
     finally:
