@@ -72,20 +72,30 @@ def safe_save_checkpoint(
         return False
 
 
-def train_lora(config_path: str, lora_config_path: str):
+def train_lora(
+    config_path: str,
+    lora_config_path: str,
+    speaker_id: str | None = None,
+):
     """Executes memory-safe LoRA fine-tuning tailored for Google Colab Free
-
     (T4 15GB).
     """
-    logger.info("Initializing LoRA fine-tuning workflow...")
+    logger.info(f"Initializing LoRA fine-tuning workflow (Speaker: {speaker_id or 'ALL'})...")
 
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     with open(lora_config_path, "r", encoding="utf-8") as f:
         lora_cfg = yaml.safe_load(f)
 
-    # Verify Google Drive availability
-    checkpoints_dir = cfg["paths"]["checkpoints_dir"]
+    # Verify Google Drive availability & speaker subdir
+    base_checkpoints_dir = cfg["paths"]["checkpoints_dir"]
+    checkpoints_dir = (
+        os.path.join(base_checkpoints_dir, speaker_id)
+        if speaker_id
+        else base_checkpoints_dir
+    )
+    os.makedirs(checkpoints_dir, exist_ok=True)
+
     if not check_drive_mounted(checkpoints_dir):
         logger.warning(
             f"Drive path {checkpoints_dir} check warning! Proceeding with fallback."
@@ -109,7 +119,9 @@ def train_lora(config_path: str, lora_config_path: str):
         cfg["paths"]["processed_dir"], "metadata.jsonl"
     )
     dataset = TTSVoiceDataset(
-        metadata_path=metadata_file, target_sr=cfg["audio"]["sampling_rate"]
+        metadata_path=metadata_file,
+        target_sr=cfg["audio"]["sampling_rate"],
+        speaker_id=speaker_id,
     )
     dataloader = DataLoader(
         dataset,
@@ -129,29 +141,20 @@ def train_lora(config_path: str, lora_config_path: str):
     else:
         logger.info("No prior checkpoint found. Training will start from step 0.")
 
-    # Base Architecture
-    from peft import LoraConfig, get_peft_model
+    # Base Architecture via Model Factory (F5-TTS MIT Commercial)
+    from src.models import get_tts_model
 
-    logger.debug("Instantiating base model architecture...")
-    base_model = torch.nn.Sequential(
-        torch.nn.Linear(512, 1024),
-        torch.nn.GELU(),
-        torch.nn.Linear(1024, 512),
-    )
-
-    peft_config = LoraConfig(
-        r=lora_cfg["lora"]["r"],
-        lora_alpha=lora_cfg["lora"]["lora_alpha"],
-        target_modules=["0", "2"],
-        lora_dropout=lora_cfg["lora"]["lora_dropout"],
-        bias=lora_cfg["lora"]["bias"],
-    )
-
-    try:
-        model = get_peft_model(base_model, peft_config)
-    except Exception as e:
-        logger.warning(f"PEFT wrapping note: {e}. Using raw backbone.")
-        model = base_model
+    backbone_name = lora_cfg["training"].get("backbone", "f5-tts")
+    logger.info(f"Loading Base TTS Model Adapter: {backbone_name}")
+    adapter = get_tts_model(backbone_name, config={"hidden_dim": 512})
+    model = adapter.build_lora_model(lora_cfg.get("lora", {}))
+    if model is None:
+        logger.warning("Adapter returned None for LoRA wrapper; instantiating linear fallback.")
+        model = torch.nn.Sequential(
+            torch.nn.Linear(512, 1024),
+            torch.nn.GELU(),
+            torch.nn.Linear(1024, 512),
+        )
 
     if latest_ckpt and os.path.exists(latest_ckpt):
         try:
@@ -276,6 +279,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--lora-config", type=str, default="configs/lora_config.yaml"
     )
+    parser.add_argument(
+        "--speaker-id", type=str, default=None, help="Target speaker ID for isolated training"
+    )
     args = parser.parse_args()
 
-    train_lora(args.config, args.lora_config)
+    train_lora(args.config, args.lora_config, speaker_id=args.speaker_id)

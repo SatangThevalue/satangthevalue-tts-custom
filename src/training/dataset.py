@@ -16,9 +16,15 @@ class TTSVoiceDataset(Dataset):
     sequences with corrupted-audio resilience.
     """
 
-    def __init__(self, metadata_path: str, target_sr: int = 24000):
+    def __init__(
+        self,
+        metadata_path: str,
+        target_sr: int = 24000,
+        speaker_id: str | None = None,
+    ):
         self.items = []
         self.target_sr = target_sr
+        self.speaker_id = speaker_id
 
         if not os.path.exists(metadata_path):
             raise FileNotFoundError(
@@ -33,6 +39,8 @@ class TTSVoiceDataset(Dataset):
                 if line.strip():
                     try:
                         item = json.loads(line)
+                        if self.speaker_id and item.get("speaker") != self.speaker_id:
+                            continue
                         audio_path = item.get("audio_path", "")
                         if Path(audio_path).exists():
                             self.items.append(item)

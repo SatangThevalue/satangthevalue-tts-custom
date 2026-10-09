@@ -121,6 +121,20 @@ if __name__ == "__main__":
         type=str,
         default="/content/drive/MyDrive/tts-project/04_onnx_exports/model.onnx",
     )
+    parser.add_argument(
+        "--speaker-id",
+        type=str,
+        default=None,
+        help="Optional speaker ID to route checkpoint and output paths",
+    )
     args = parser.parse_args()
 
-    export_to_onnx(args.checkpoint, args.output)
+    ckpt = args.checkpoint
+    out = args.output
+    if args.speaker_id:
+        if "03_checkpoints" in ckpt and args.speaker_id not in ckpt:
+            ckpt = ckpt.replace("03_checkpoints", f"03_checkpoints/{args.speaker_id}")
+        if "04_onnx_exports" in out and args.speaker_id not in out:
+            out = out.replace("04_onnx_exports", f"04_onnx_exports/{args.speaker_id}")
+
+    export_to_onnx(ckpt, out)

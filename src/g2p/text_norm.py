@@ -158,6 +158,7 @@ def process_metadata_g2p(input_jsonl: str, output_jsonl: str) -> int:
             item["normalized_text"] = norm_text
             item["phonemes"] = phonemes
             item["tone_locked"] = is_valid_tone
+            item["speaker"] = item.get("speaker", "default")
 
             f_out.write(json.dumps(item, ensure_ascii=False) + "\n")
             f_out.flush()

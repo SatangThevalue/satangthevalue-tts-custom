@@ -200,5 +200,11 @@ if __name__ == "__main__":
     if in_path.is_file():
         slice_audio_with_vad(str(in_path), args.out_dir)
     elif in_path.is_dir():
-        for audio_file in in_path.glob("*.wav"):
-            slice_audio_with_vad(str(audio_file), args.out_dir)
+        for audio_file in sorted(in_path.rglob("*.wav")):
+            try:
+                rel_parent = audio_file.parent.relative_to(in_path)
+                target_out = Path(args.out_dir) / rel_parent
+            except ValueError:
+                target_out = Path(args.out_dir)
+            target_out.mkdir(parents=True, exist_ok=True)
+            slice_audio_with_vad(str(audio_file), str(target_out))

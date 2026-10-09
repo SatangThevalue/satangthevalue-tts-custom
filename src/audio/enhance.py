@@ -140,8 +140,12 @@ def batch_enhance(
 
     results = []
     for idx, file in enumerate(audio_files):
-        rel_name = file.stem + ".wav"
-        dest_file = out_path / rel_name
+        try:
+            rel_subpath = file.relative_to(raw_path)
+            dest_file = out_path / rel_subpath.with_suffix(".wav")
+        except ValueError:
+            dest_file = out_path / (file.stem + ".wav")
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Incremental check: skip already enhanced audio
         if dest_file.exists() and dest_file.stat().st_size > 1000:

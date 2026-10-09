@@ -31,28 +31,34 @@
 ## แผนภาพการทำงานของระบบ (Pipeline Flow)
 
 ```
-[Mobile Phone Audio (.m4a/.wav)]
+[Sources: Mobile Audio (.m4a/.wav) OR Social Media (YouTube / FB / IG)]
               │
               ▼
-    [1. Resemble Enhance]     ──► ตัด Reverb/Noise + ขยายย่าน 12k-24kHz
+    [1. Ingestion & Filter]   ──► yt-dlp + Target Voice Filter (เทียบ reference.wav ตัดเสียงคนอื่น)
               │
               ▼
-    [2. Silero VAD Slice]     ──► หั่น 3.0s - 10.0s + เก็บเสียงหายใจ (Pad 150/200ms)
+    [2. Resemble Enhance]     ──► ตัด Reverb/Noise + ขยายย่าน 12k-24kHz (บันทึก registry.db)
               │
               ▼
-    [3. Faster-Whisper]       ──► ถอดเสียงไทยอัตโนมัติ (คัดกรอง logprob > -0.5)
+    [3. Silero VAD Slice]     ──► หั่น 3.0s - 10.0s + เก็บเสียงหายใจ (Pad 150/200ms)
               │
               ▼
-    [4. Thai Tonal G2P]       ──► ล็อกวรรณยุกต์ 5 ระดับ [0-4] (PyThaiNLP + pypinyin)
+    [4. Faster-Whisper]       ──► ถอดเสียงไทยอัตโนมัติ (คัดกรอง logprob > -0.5)
               │
               ▼
-    [5. LoRA Fine-Tuning]     ──► รันบน Colab T4 (FP16, 8-bit AdamW, VRAM < 13GB)
+    [5. Thai Tonal G2P]       ──► ล็อกวรรณยุกต์ 5 ระดับ [0-4] (PyThaiNLP + pypinyin)
               │
               ▼
-    [6. ONNX INT8 Export]     ──► แปลงเป็น ONNX (< 250MB) ตัดกราฟด้วย onnxslim
+    [6. Speaker Audit Gate]   ──► Inspector ตรวจสอบเวลารวม, คำซ้ำ, วรรณยุกต์ครบ 5 เสียง
               │
               ▼
-    [7. Pedalboard DSP]       ──► Highpass 80Hz + Compressor + Limiter ใน RAM
+    [7. LoRA Fine-Tuning]     ──► F5-TTS (MIT 100% Commercial) บน Colab T4 (VRAM < 11GB)
+              │
+              ▼
+    [8. ONNX INT8 Export]     ──► แปลงเป็น ONNX (< 250MB) ตัดกราฟด้วย onnxslim
+              │
+              ▼
+    [9. Pedalboard DSP]       ──► Highpass 80Hz + Compressor + Limiter ใน RAM
               │
               ▼
       [Final Studio Wav]
@@ -67,11 +73,18 @@ satangthevalue-tts-custom/
 ├── configs/
 │   ├── base_config.yaml         # Audio sampling, paths, audio parameters
 │   └── lora_config.yaml         # LoRA rank, alpha, learning rate, target modules
-├── docs/                        # เอกสารอธิบายรายละเอียดเชิงลึกครบทั้ง 8 โมดูล
+├── docs/                        # เอกสารอธิบายรายละเอียดเชิงลึก
 ├── notebooks/
-│   └── colab_pipeline.ipynb     # Interactive Jupyter Notebook สำหรับรันบน Colab
+│   ├── colab_pipeline.ipynb     # All-in-One 7-Step Interactive Studio บน Colab
+│   └── colab_inference_only.ipynb
 ├── src/
+│   ├── models/                  # Base Model Management (100% Commercial MIT)
+│   │   ├── downloader.py        # โหลด F5-TTS และแคชถาวรใน Google Drive
+│   │   ├── base_adapter.py      # Abstract interface สำหรับรองรับโมเดลใหม่ในอนาคต
+│   │   └── f5_adapter.py        # F5-TTS Flow Matching DiT Adapter
 │   ├── audio/
+│   │   ├── download.py          # yt-dlp Ingestion (YouTube, Facebook, Instagram)
+│   │   ├── voice_filter.py      # Target Voice Filter (Cosine Similarity ตัดเสียงคนอื่น)
 │   │   ├── enhance.py           # Resemble Enhance (Denoise + De-reverb)
 │   │   ├── slicer.py            # Silero VAD Chunking + Breath Preservation
 │   │   └── mastering.py         # Spotify Pedalboard Studio DSP Chain
@@ -80,8 +93,8 @@ satangthevalue-tts-custom/
 │   ├── g2p/
 │   │   └── text_norm.py         # PyThaiNLP + Thai Tonal Locking [0-4]
 │   ├── training/
-│   │   ├── dataset.py           # PyTorch Dataset + Collator
-│   │   └── finetune_lora.py     # Accelerate + BitsAndBytes 8-bit Training
+│   │   ├── dataset.py           # PyTorch Dataset + Collator (Multi-Speaker Filter)
+│   │   └── finetune_lora.py     # Accelerate + BitsAndBytes 8-bit F5-TTS Training
 │   ├── export/
 │   │   ├── export_onnx.py       # PyTorch to ONNX Graph Exporter
 │   │   └── optimize.py          # OnnxSlim Pruning + Dynamic INT8 Quantizer
@@ -89,7 +102,13 @@ satangthevalue-tts-custom/
 │   │   └── engine.py            # ONNX Runtime Engine + In-Context Emotion Guide
 │   └── utils/
 │       ├── guards.py            # Hard Error Guards (VRAM, Duration, SNR, Tone)
+│       ├── registry.py          # SQLite media_registry (กันโหลดซ้ำ + สรุปเวลา)
+│       ├── speaker_inspector.py # Speaker Audit Dashboard (สถิติคำ + วรรณยุกต์)
+│       ├── logger.py            # Verbose Console & Google Drive DEBUG File Logger
 │       └── pack.py              # Tarfile Dataset Pack/Unpack (Drive I/O Fix)
+├── tests/
+│   ├── test_pipeline_logic.py   # Basic pipeline self-test
+│   └── test_master_pipeline.py  # Comprehensive 6-suite verification
 ├── pyproject.toml               # Poetry/UV Project Configuration
 ├── .gitignore                   # Ignore audio, weights, and caches
 └── README.md

@@ -95,7 +95,7 @@ def transcribe_dataset(
         )
         model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
-    wav_files = sorted(list(Path(wavs_dir).glob("*.wav")))
+    wav_files = sorted(list(Path(wavs_dir).rglob("*.wav")))
     if not wav_files:
         logger.warning(f"No WAV files found in directory: {wavs_dir}")
         return 0
@@ -132,6 +132,16 @@ def transcribe_dataset(
             result = transcribe_chunk(model, abs_wav, min_logprob=min_logprob)
 
             if result:
+                # Extract speaker from directory hierarchy
+                speaker_name = "default"
+                try:
+                    rel_p = wav.parent.relative_to(Path(wavs_dir))
+                    if str(rel_p) != ".":
+                        speaker_name = str(rel_p).split(os.sep)[0]
+                except ValueError:
+                    pass
+                result["speaker"] = speaker_name
+
                 f_out.write(json.dumps(result, ensure_ascii=False) + "\n")
                 f_out.flush()  # Atomic flush to disk
                 valid_count += 1
