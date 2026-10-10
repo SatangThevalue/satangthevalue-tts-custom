@@ -3,10 +3,10 @@ training:
   mixed_precision: "fp16"
   batch_size: 2
   gradient_accumulation_steps: 4
-  learning_rate: 1.0e-4
+  learning_rate: 1.0e-5
   optimizer: "AdamW8bit"
   max_steps: 2500
-  checkpoint_interval: 200
+  checkpoint_interval: 500
   vram_limit_gb: 13.0
 
 lora:
