@@ -194,10 +194,8 @@ def transcribe_dataset(
         for idx, wav in enumerate(wav_files):
             abs_wav = str(wav.resolve())
             if abs_wav in existing_paths:
-                logger.debug(f"Skipping already transcribed: {wav.name}")
                 continue
 
-            logger.debug(f"[{idx + 1}/{len(wav_files)}] Transcribing {wav.name}...")
             result = transcribe_chunk(model, abs_wav, min_logprob=min_logprob)
 
             if result:
@@ -212,13 +210,13 @@ def transcribe_dataset(
                 result["speaker"] = speaker_name
 
                 f_out.write(json.dumps(result, ensure_ascii=False) + "\n")
-                f_out.flush()  # Atomic flush to disk
                 valid_count += 1
                 existing_paths.add(abs_wav)
 
-            if (idx + 1) % 25 == 0:
+            if (idx + 1) % 25 == 0 or (idx + 1) == len(wav_files):
+                f_out.flush()  # Periodic flush
                 logger.info(
-                    f"ASR Progress: {idx + 1}/{len(wav_files)} files evaluated ({valid_count} accepted)."
+                    f"ASR Progress: [{idx + 1}/{len(wav_files)}] chunks evaluated ({valid_count} accepted)."
                 )
 
     logger.info(

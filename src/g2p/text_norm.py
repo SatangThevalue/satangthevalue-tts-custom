@@ -173,11 +173,13 @@ def process_metadata_g2p(input_jsonl: str, output_jsonl: str) -> int:
             item["speaker"] = item.get("speaker", "default")
 
             f_out.write(json.dumps(item, ensure_ascii=False) + "\n")
-            f_out.flush()
             valid_count += 1
 
             if line_no % 50 == 0:
-                logger.debug(f"G2P Processed {line_no} records...")
+                f_out.flush()
+                logger.info(f"G2P Progress: {line_no} records transformed...")
+
+        f_out.flush()
 
     logger.info(
         f"G2P Transformation complete! {valid_count} entries recorded into {output_jsonl}"
