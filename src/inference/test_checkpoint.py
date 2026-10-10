@@ -90,7 +90,44 @@ def preview_checkpoint_audio(
     if target_pt:
         logger.info(f"Loading weights (Step {active_step}): {target_pt}")
 
-    # Synthesize real human voice or fallback to simulation if F5-TTS not installed
+    try:
+        import f5_tts
+        HAS_F5 = True
+    except ImportError:
+        HAS_F5 = False
+
+    if not HAS_F5:
+        # Headless testing environment without f5-tts (e.g. VPS CI)
+        logger.info("F5-TTS library not installed in host environment. Running simulated test waveform.")
+        sample_rate = 24000
+        dur_sim = max(1.5, len(text.split()) * 0.38)
+        num_samples = int(sample_rate * dur_sim)
+        synth_wave = (np.sin(2 * np.pi * 220 * np.linspace(0, dur_sim, num_samples)) * 0.25).astype(np.float32)
+        raw_tmp = output_wav.replace(".wav", "_raw.wav")
+        os.makedirs(os.path.dirname(output_wav) or ".", exist_ok=True)
+        import soundfile as sf
+        sf.write(raw_tmp, synth_wave, sample_rate, subtype="PCM_16")
+        final_wav = apply_studio_mastering(
+            raw_tmp,
+            output_wav,
+            speed_factor=speed_factor,
+            pitch_semitones=pitch_semitones,
+            warmth_drive=warmth_drive,
+        )
+        if os.path.exists(raw_tmp) and raw_tmp != output_wav:
+            os.remove(raw_tmp)
+        
+        elapsed = time.perf_counter() - t0
+        return {
+            "output_path": final_wav,
+            "duration_sec": dur_sim,
+            "elapsed_sec": elapsed,
+            "rtf": elapsed / dur_sim,
+            "is_simulation": True,
+            "checkpoint_step": active_step
+        }
+
+    # Synthesize real human voice
     try:
         final_wav = synthesize_f5(
             text=text,
@@ -102,25 +139,6 @@ def preview_checkpoint_audio(
             warmth_drive=warmth_drive,
             enable_mastering=True,
         )
-    except ImportError as ie:
-        # Headless testing environment without f5-tts (e.g. VPS CI)
-        logger.info(f"F5-TTS library not installed in host environment ({ie}). Running simulated test waveform.")
-        sample_rate = 24000
-        dur_sim = max(1.5, len(text.split()) * 0.38)
-        num_samples = int(sample_rate * dur_sim)
-        synth_wave = (np.sin(2 * np.pi * 220 * np.linspace(0, dur_sim, num_samples)) * 0.25).astype(np.float32)
-        raw_tmp = output_wav.replace(".wav", "_raw.wav")
-        os.makedirs(os.path.dirname(output_wav) or ".", exist_ok=True)
-        sf.write(raw_tmp, synth_wave, sample_rate, subtype="PCM_16")
-        final_wav = apply_studio_mastering(
-            raw_tmp,
-            output_wav,
-            speed_factor=speed_factor,
-            pitch_semitones=pitch_semitones,
-            warmth_drive=warmth_drive,
-        )
-        if os.path.exists(raw_tmp) and raw_tmp != output_wav:
-            os.remove(raw_tmp)
     except Exception as real_err:
         logger.error(f"F5-TTS synthesis failed: {real_err}")
         raise RuntimeError(
