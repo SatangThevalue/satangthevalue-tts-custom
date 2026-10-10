@@ -158,7 +158,7 @@ def ensure_base_model_cached(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Base Model Downloader & Drive Caching")
-    parser.add_argument("--model", type=str, default="f5-tts", help="Model name (e.g. f5-tts, piper-thai)")
+    parser.add_argument("--model", type=str, default="f5-tts-thai", help="Model name (e.g. f5-tts-thai, f5-tts, piper-thai)")
     parser.add_argument("--base-dir", type=str, default="/content/drive/MyDrive/tts-project/00_base_models")
     parser.add_argument("--force", action="store_true", help="Force re-download")
     args = parser.parse_args()

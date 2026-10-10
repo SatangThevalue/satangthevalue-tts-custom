@@ -136,13 +136,15 @@ def synthesize_f5(
     meta_path: str = DEFAULT_META_PATH,
     ref_audio_path: Optional[str] = None,
     ref_text: Optional[str] = None,
-    speed_factor: float = 1.0,
+    speed_factor: float = 0.9,  # 0.9 recommended for Thai to prevent skipped words
     pitch_semitones: float = 0.0,
     warmth_drive: float = 1.15,
     room_reverb_wet: float = 0.05,
     deess_gain_db: float = -2.5,
     enable_mastering: bool = True,
     nfe_steps: int = 32,
+    cfg_strength: float = 2.0,
+    sway_sampling_coef: float = -1.0,
 ) -> str:
     """Synthesizes human-like speech using real F5-TTS Flow Matching + Vocos Vocoder.
     In-context voice cloning: automatically picks best reference chunk from training data.
@@ -288,6 +290,8 @@ def synthesize_f5(
         vocoder,
         speed=speed_factor,
         nfe_step=nfe_steps,
+        cfg_strength=cfg_strength,
+        sway_sampling_coef=sway_sampling_coef,
         show_info=logger.info,
         device=device,
     )
