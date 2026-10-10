@@ -56,54 +56,67 @@ def enhance_audio_file(
     raw_snr, _ = calculate_snr(waveform.squeeze(0).numpy())
     logger.debug(f"Pre-enhancement SNR: {raw_snr:.2f} dB")
 
+    # Fast path: If already studio-grade 24kHz mono (SNR >= 28dB) and AI enhancement model is absent:
     try:
         from resemble_enhance.enhancer.inference import denoise, enhance
-
-        logger.debug("Resemble Enhance backend detected. Preparing 44.1kHz tensors...")
-        if sr != 44100:
-            resampler = torchaudio.transforms.Resample(
-                orig_freq=sr, new_freq=44100
-            ).to(device)
-            waveform_44k = resampler(waveform.to(device))
-        else:
-            waveform_44k = waveform.to(device)
-
-        with torch.no_grad():
-            if denoise_only:
-                logger.debug("Running denoise-only mode...")
-                enhanced_wav, _ = denoise(
-                    waveform_44k.squeeze(0), 44100, device=device
-                )
-            else:
-                logger.debug("Running full enhancement (denoise + bandwidth extension)...")
-                enhanced_wav, _ = enhance(
-                    waveform_44k.squeeze(0),
-                    44100,
-                    device=device,
-                    nfe=32,
-                    solver="midpoint",
-                    lambd=0.9,
-                    tau=0.5,
-                )
-
-        enhanced_wav = enhanced_wav.cpu().unsqueeze(0)
-        resampler_final = torchaudio.transforms.Resample(
-            orig_freq=44100, new_freq=target_sr
-        )
-        final_wav = resampler_final(enhanced_wav).squeeze(0).numpy()
-
+        has_resemble = True
     except ImportError:
-        logger.warning(
-            "resemble-enhance package not found. Executing high-pass and high-quality sinc resample fallback."
+        has_resemble = False
+
+    if not has_resemble and sr == target_sr and raw_snr >= 28.0 and waveform.shape[0] == 1:
+        logger.info(
+            f"✨ Audio is already studio-grade (SNR: {raw_snr:.2f} dB >= 28dB, {target_sr}Hz). Instant pass-through."
         )
-        if sr != target_sr:
-            resampler = torchaudio.transforms.Resample(
-                orig_freq=sr, new_freq=target_sr
+        import shutil
+        shutil.copyfile(input_path, output_path)
+        return output_path
+
+    if has_resemble:
+        try:
+            logger.debug("Resemble Enhance backend detected. Preparing 44.1kHz tensors...")
+            if sr != 44100:
+                resampler = torchaudio.transforms.Resample(
+                    orig_freq=sr, new_freq=44100
+                ).to(device)
+                waveform_44k = resampler(waveform.to(device))
+            else:
+                waveform_44k = waveform.to(device)
+
+            with torch.no_grad():
+                if denoise_only:
+                    logger.debug("Running denoise-only mode...")
+                    enhanced_wav, _ = denoise(
+                        waveform_44k.squeeze(0), 44100, device=device
+                    )
+                else:
+                    logger.debug("Running full enhancement (denoise + bandwidth extension)...")
+                    enhanced_wav, _ = enhance(
+                        waveform_44k.squeeze(0),
+                        44100,
+                        device=device,
+                        nfe=32,
+                        solver="midpoint",
+                        lambd=0.9,
+                        tau=0.5,
+                    )
+
+            enhanced_wav = enhanced_wav.cpu().unsqueeze(0)
+            resampler_final = torchaudio.transforms.Resample(
+                orig_freq=44100, new_freq=target_sr
             )
-            waveform = resampler(waveform)
-        final_wav = waveform.squeeze(0).numpy()
-    except Exception as e:
-        logger.error(f"Error during Resemble Enhance model execution: {e}. Falling back to original waveform.")
+            final_wav = resampler_final(enhanced_wav).squeeze(0).numpy()
+        except Exception as e:
+            logger.error(f"Error during Resemble Enhance model execution: {e}. Falling back to original waveform.")
+            if sr != target_sr:
+                resampler = torchaudio.transforms.Resample(
+                    orig_freq=sr, new_freq=target_sr
+                )
+                waveform = resampler(waveform)
+            final_wav = waveform.squeeze(0).numpy()
+    else:
+        logger.warning(
+            "resemble-enhance package not found. Executing high-quality sinc resample fallback."
+        )
         if sr != target_sr:
             resampler = torchaudio.transforms.Resample(
                 orig_freq=sr, new_freq=target_sr

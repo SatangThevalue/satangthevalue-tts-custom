@@ -1,4 +1,5 @@
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import time
@@ -33,7 +34,7 @@ def compute_acoustic_embedding(waveform: np.ndarray, sr: int = 24000) -> np.ndar
     f, t, sxx = spectrogram(waveform, fs=sr, nperseg=nperseg, noverlap=nperseg // 2)
     sxx = np.log1p(sxx + 1e-6)
 
-    # 1. Frequency sub-band energy profile (Timbre characteristic)
+    # Frequency sub-band energy profile (Timbre characteristic)
     subbands = np.array_split(sxx, 32, axis=0)
     band_means = np.array([np.mean(sb) for sb in subbands], dtype=np.float32)
     band_stds = np.array([np.std(sb) for sb in subbands], dtype=np.float32)
@@ -62,12 +63,13 @@ def filter_audio_chunks(
     reference_wav_path: str,
     threshold: float = 0.70,
     rejected_dir: Optional[str] = None,
+    max_workers: int = 4,
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
-    """Filters audio chunks by comparing acoustic signature against reference voice.
+    """Filters audio chunks in parallel by comparing acoustic signature against reference voice.
     Chunks with similarity below threshold are identified as other speakers and dropped.
     """
     logger.info(
-        f"Initializing Target Voice Filter -> Reference: {reference_wav_path} (Threshold: {threshold:.2f})"
+        f"Initializing Target Voice Filter -> Reference: {reference_wav_path} (Threshold: {threshold:.2f}, Workers: {max_workers})"
     )
 
     if not os.path.exists(reference_wav_path):
@@ -79,49 +81,55 @@ def filter_audio_chunks(
         ref_audio = np.mean(ref_audio, axis=1)
     ref_emb = compute_acoustic_embedding(ref_audio, sr=ref_sr)
 
-    accepted_chunks: List[str] = []
-    audit_report: List[Dict[str, Any]] = []
-
     if rejected_dir:
         Path(rejected_dir).mkdir(parents=True, exist_ok=True)
 
     t0 = time.perf_counter()
-    for idx, path_str in enumerate(chunk_paths, start=1):
-        if not os.path.exists(path_str):
-            continue
 
+    def _eval_chunk(p_str: str) -> Optional[Dict[str, Any]]:
+        if not os.path.exists(p_str):
+            return None
         try:
-            audio, sr = sf.read(path_str)
+            audio, sr = sf.read(p_str)
             if audio.ndim > 1:
                 audio = np.mean(audio, axis=1)
-
             chunk_emb = compute_acoustic_embedding(audio, sr=sr)
             sim = compute_cosine_similarity(ref_emb, chunk_emb)
-
             passed = sim >= threshold
-            status = "ACCEPTED" if passed else "REJECTED (Other Speaker)"
-
-            record = {
-                "chunk_path": path_str,
+            return {
+                "chunk_path": p_str,
                 "similarity": round(sim, 4),
                 "passed": passed,
-                "status": status,
+                "status": "ACCEPTED" if passed else "REJECTED (Other Speaker)",
             }
-            audit_report.append(record)
-
-            if passed:
-                accepted_chunks.append(path_str)
-                logger.debug(f"[{idx}/{len(chunk_paths)}] {Path(path_str).name} -> Match: {sim:.3f} (Passed)")
-            else:
-                logger.warning(
-                    f"[{idx}/{len(chunk_paths)}] FILTERED OUT other speaker: {Path(path_str).name} (Sim: {sim:.3f} < {threshold})"
-                )
-                if rejected_dir:
-                    dest = Path(rejected_dir) / Path(path_str).name
-                    os.replace(path_str, dest)
-
         except Exception as e:
-            logger.error(f"Error processing chunk {path_str}: {e}")
+            logger.error(f"Error processing chunk {p_str}: {e}")
+            return None
+
+    workers = min(max_workers, len(chunk_paths)) if chunk_paths else 1
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            records = list(executor.map(_eval_chunk, chunk_paths))
+    else:
+        records = [_eval_chunk(p) for p in chunk_paths]
+
+    accepted_chunks: List[str] = []
+    audit_report: List[Dict[str, Any]] = []
+
+    for rec in records:
+        if not rec:
+            continue
+        audit_report.append(rec)
+        path_str = rec["chunk_path"]
+        if rec["passed"]:
+            accepted_chunks.append(path_str)
+        else:
+            if rejected_dir:
+                dest = Path(rejected_dir) / Path(path_str).name
+                try:
+                    os.replace(path_str, dest)
+                except OSError:
+                    pass
 
     elapsed = time.perf_counter() - t0
     retention_rate = (len(accepted_chunks) / len(chunk_paths) * 100) if chunk_paths else 0.0
@@ -138,6 +146,7 @@ if __name__ == "__main__":
     parser.add_argument("--reference", type=str, required=True, help="Path to clean reference voice sample (5-10s)")
     parser.add_argument("--threshold", type=float, default=0.70, help="Similarity threshold (0.5 - 0.9)")
     parser.add_argument("--rejected-dir", type=str, help="Directory to quarantine rejected chunks")
+    parser.add_argument("--workers", type=int, default=4, help="Number of worker threads")
     args = parser.parse_args()
 
     accepted, report = filter_audio_chunks(
@@ -145,5 +154,6 @@ if __name__ == "__main__":
         reference_wav_path=args.reference,
         threshold=args.threshold,
         rejected_dir=args.rejected_dir,
+        max_workers=args.workers,
     )
     print(f"Accepted chunks count: {len(accepted)}")

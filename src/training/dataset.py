@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 import torchaudio
@@ -70,19 +71,30 @@ class TTSVoiceDataset(Dataset):
         item = self.items[idx]
         wav_path = item["audio_path"]
 
+        # High-speed local NVMe redirection: bypass Google Drive FUSE latency if local cache exists
+        if "/content/drive/MyDrive/tts-project/02_processed" in wav_path:
+            local_alt = wav_path.replace(
+                "/content/drive/MyDrive/tts-project/02_processed",
+                "/content/dataset_local"
+            )
+            if os.path.exists(local_alt):
+                wav_path = local_alt
+
         try:
-            waveform, sr = torchaudio.load(wav_path)
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
+            import soundfile as sf
+            audio_np, sr = sf.read(wav_path)
+            if audio_np.ndim > 1:
+                audio_np = np.mean(audio_np, axis=1)
 
             if sr != self.target_sr:
-                resampler = torchaudio.transforms.Resample(
-                    orig_freq=sr, new_freq=self.target_sr
-                )
-                waveform = resampler(waveform)
+                from scipy.signal import resample
+                num_target = int(len(audio_np) * self.target_sr / sr)
+                audio_np = resample(audio_np, num_target)
+
+            waveform = torch.from_numpy(audio_np.astype(np.float32))
 
             return {
-                "waveform": waveform.squeeze(0),
+                "waveform": waveform,
                 "text": item.get("normalized_text", ""),
                 "phonemes": item.get("phonemes", ""),
                 "audio_path": wav_path,
@@ -90,7 +102,6 @@ class TTSVoiceDataset(Dataset):
             }
         except Exception as e:
             logger.error(f"Error loading waveform from {wav_path}: {e}")
-            # Return 1 second of dummy silence if an individual file fails to prevent crash
             dummy_wave = torch.zeros(self.target_sr, dtype=torch.float32)
             return {
                 "waveform": dummy_wave,

@@ -114,10 +114,15 @@ def train_lora(
         f"Accelerator initialized -> Device: {accelerator.device}, Mixed Precision: {accelerator.mixed_precision}"
     )
 
-    # Initialize Dataset
-    metadata_file = os.path.join(
-        cfg["paths"]["processed_dir"], "metadata.jsonl"
-    )
+    # Initialize Dataset (Prefer high-speed local NVMe cache if extracted)
+    local_meta = "/content/dataset_local/metadata.jsonl"
+    if os.path.exists(local_meta):
+        metadata_file = local_meta
+        logger.info(f"🚀 Using high-speed local NVMe dataset cache: {metadata_file}")
+    else:
+        metadata_file = os.path.join(
+            cfg["paths"]["processed_dir"], "metadata.jsonl"
+        )
     dataset = TTSVoiceDataset(
         metadata_path=metadata_file,
         target_sr=cfg["audio"]["sampling_rate"],
