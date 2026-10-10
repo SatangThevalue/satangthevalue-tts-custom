@@ -79,6 +79,7 @@ def train_lora(
     max_steps_override: int | None = None,
     batch_size_override: int | None = None,
     base_weights_path: str | None = None,
+    reset_checkpoints: bool = False,
 ):
     """Executes memory-safe LoRA fine-tuning tailored for Google Colab Free
     (T4 15GB).
@@ -149,13 +150,17 @@ def train_lora(
     )
 
     # Check for existing checkpoint to resume
-    latest_ckpt, start_step = get_latest_checkpoint(checkpoints_dir)
-    if latest_ckpt:
-        logger.info(
-            f"Resuming training from checkpoint: {latest_ckpt} (Starting at Step {start_step})"
-        )
+    if reset_checkpoints:
+        logger.info("Fresh start requested via --reset. Ignoring prior checkpoints.")
+        latest_ckpt, start_step = None, 0
     else:
-        logger.info("No prior checkpoint found. Training will start from step 0.")
+        latest_ckpt, start_step = get_latest_checkpoint(checkpoints_dir)
+        if latest_ckpt:
+            logger.info(
+                f"Resuming training from checkpoint: {latest_ckpt} (Starting at Step {start_step})"
+            )
+        else:
+            logger.info("No prior checkpoint found. Training will start from step 0.")
 
     # Base Architecture via Model Factory (F5-TTS MIT Commercial)
     from src.models import get_tts_model
@@ -318,6 +323,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--base-weights", type=str, default=None, help="Path to pretrained base F5-TTS weights"
     )
+    parser.add_argument(
+        "--reset", action="store_true", help="Start training from step 0 (ignore existing checkpoints)"
+    )
     args = parser.parse_args()
 
     train_lora(
@@ -327,4 +335,5 @@ if __name__ == "__main__":
         max_steps_override=args.max_steps,
         batch_size_override=args.batch_size,
         base_weights_path=args.base_weights,
+        reset_checkpoints=args.reset,
     )
