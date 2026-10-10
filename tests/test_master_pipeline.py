@@ -211,7 +211,29 @@ def run_master_pipeline_tests():
         assert prev_res["checkpoint_step"] == 2500
         logger.info(f"Checkpoint preview passed: {prev_res['output_path']} (duration: {prev_res['duration_sec']:.2f}s)")
 
-        logger.info("=== ALL 7 MASTER PIPELINE TESTS PASSED WITH 100% SUCCESS RATE ===")
+        # 8. Test Statistical Voice Quality Evaluator & Radar Dashboard
+        logger.info("[Test 8/8] Testing Statistical Voice Quality Evaluator & Dashboard...")
+        from src.evaluation.voice_evaluator import evaluate_synthesized_voice, compute_cer_wer
+        cer, wer = compute_cer_wer("สวัสดีครับ วันนี้มีประชุม", "สวัสดีครับ วันนี้มีประชุม")
+        assert cer == 0.0 and wer == 0.0, "Exact match must yield 0 CER and WER"
+
+        report = evaluate_synthesized_voice(
+            generated_wav_path=prev_res["output_path"],
+            reference_wav_path=chunk_a,
+            prompt_text="สวัสดีครับ ทดสอบเสียง",
+            run_asr_check=False,
+            latency_sec=0.2,
+            speaker_id="satang",
+        )
+        assert report.score > 0.0
+        assert report.grade in ["S", "A", "B", "C", "F"]
+        radar_file = os.path.join(tmp_dir, "test_radar.png")
+        plot_res = report.plot_colab_dashboard(radar_file)
+        if plot_res:
+            assert os.path.exists(radar_file)
+        logger.info(f"Statistical Evaluator verified: CQI={report.score:.1f}/100 (Grade {report.grade})")
+
+        logger.info("=== ALL 8 MASTER PIPELINE TESTS PASSED WITH 100% SUCCESS RATE ===")
         return True
 
     finally:
