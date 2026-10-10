@@ -1,9 +1,15 @@
 import argparse
 import json
 import re
-from pythainlp import word_tokenize
-from pythainlp.soundex import lk82
-from pythainlp.util import normalize, num_to_thaiword
+try:
+    from pythainlp import word_tokenize
+    from pythainlp.soundex import lk82
+    from pythainlp.util import normalize, num_to_thaiword
+except ImportError:
+    word_tokenize = None  # type: ignore
+    lk82 = None  # type: ignore
+    normalize = None  # type: ignore
+    num_to_thaiword = None  # type: ignore
 
 from src.utils.guards import validate_thai_tone
 from src.utils.logger import setup_logger
@@ -53,6 +59,9 @@ def normalize_thai_text(text: str) -> str:
     for acronym, replacement in COMMON_TECH_ACRONYMS.items():
         text = re.sub(rf"\b{acronym}\b", replacement, text, flags=re.IGNORECASE)
 
+    if normalize is None or num_to_thaiword is None:
+        raise ImportError("pythainlp is required for Thai text normalization. Install via: pip install pythainlp")
+
     # Unicode normalization for Thai vowels
     text = normalize(text)
 
@@ -91,6 +100,9 @@ def text_to_phonemes(text: str) -> str:
     clean_text = normalize_thai_text(text)
     if not clean_text:
         return ""
+
+    if word_tokenize is None:
+        raise ImportError("pythainlp is required for tokenization. Install via: pip install pythainlp")
 
     words = word_tokenize(clean_text, engine="newmm")
     logger.debug(f"Tokenized words: {words}")

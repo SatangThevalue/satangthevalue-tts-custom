@@ -79,7 +79,11 @@ def transcribe_dataset(
 
     resume support.
     """
-    from faster_whisper import WhisperModel
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        logger.error("❌ faster-whisper is not installed. Run: pip install faster-whisper")
+        raise ImportError("faster-whisper is required for ASR transcription. Run: pip install faster-whisper")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     compute_type = "float16" if torch.cuda.is_available() else "int8"
@@ -93,7 +97,11 @@ def transcribe_dataset(
         logger.warning(
             f"Failed loading Whisper on {device} ({e}). Falling back to CPU int8..."
         )
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        try:
+            model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        except Exception as cpu_e:
+            logger.error(f"❌ Failed to load Faster-Whisper model on both GPU and CPU: {cpu_e}")
+            raise
 
     wav_files = sorted(list(Path(wavs_dir).rglob("*.wav")))
     if not wav_files:

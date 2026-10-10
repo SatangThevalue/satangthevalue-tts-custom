@@ -44,11 +44,15 @@ def _download_single_task(
                     "error": "No info extracted",
                 }
 
-            title = str(info.get("title") or f"track_{int(time.time())}")
+            title = str(info.get("title") or "media_track")
             duration = info.get("duration", 0)
-            video_id = str(info.get("id") or "unknown")
-            sanitized_title = sanitize_filename(title)
-            expected_wav = target_dir / f"{sanitized_title}_{video_id}.wav"
+            video_id = str(info.get("id") or "").strip()
+            if not video_id:
+                import hashlib
+                video_id = hashlib.md5(url_str.encode()).hexdigest()[:11]
+
+            # Use exclusively reference ID for clean, predictable filenames (e.g., 1qfCQVhvudI.wav)
+            expected_wav = target_dir / f"{video_id}.wav"
 
             # Check if file was extracted
             if not expected_wav.exists():
@@ -58,7 +62,7 @@ def _download_single_task(
 
             elapsed = time.perf_counter() - t0
             logger.info(
-                f"[DOWNLOAD FINISHED] '{title}' ({duration}s) -> {expected_wav.name} (Elapsed: {elapsed:.1f}s)"
+                f"[DOWNLOAD FINISHED] ID: {video_id} ('{title[:40]}...', {duration}s) -> {expected_wav.name} (Elapsed: {elapsed:.1f}s)"
             )
 
             return {
@@ -72,12 +76,21 @@ def _download_single_task(
             }
 
     except Exception as e:
-        logger.error(f"[DOWNLOAD ERROR] Failed {url_str}: {e}")
+        err_msg = str(e)
+        hint = ""
+        if "Private video" in err_msg or "Sign in" in err_msg or "login" in err_msg.lower():
+            hint = " [คำแนะนำ: วิดีโอนี้อาจเป็นแบบส่วนตัว หรือติดจำกัดอายุ กรุณาแนบไฟล์ cookies.txt เพื่อยืนยันตัวตน]"
+        elif "HTTP Error 429" in err_msg:
+            hint = " [คำแนะนำ: เซิร์ฟเวอร์ต้นทางจำกัดอัตราดาวน์โหลดชั่วคราว ลองลดจำนวน parallel workers ลงเหลือ 1-2]"
+        elif "Incomplete" in err_msg or "timed out" in err_msg.lower():
+            hint = " [คำแนะนำ: เครือข่ายขัดข้องระหว่างสตรีมเสียง ลองกดดาวน์โหลดใหม่อีกครั้ง]"
+
+        logger.error(f"[DOWNLOAD ERROR] Failed {url_str}: {err_msg}{hint}")
         return {
             "url": url_str,
             "speaker_id": speaker_id,
             "status": "error",
-            "error": str(e),
+            "error": f"{err_msg}{hint}",
         }
 
 
@@ -113,7 +126,7 @@ def download_media_audio(
 
     ydl_opts: Dict[str, Any] = {
         "format": "bestaudio/best",
-        "outtmpl": str(target_dir / "%(title).60s_%(id)s.%(ext)s"),
+        "outtmpl": str(target_dir / "%(id)s.%(ext)s"),
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
