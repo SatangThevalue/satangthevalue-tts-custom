@@ -76,6 +76,9 @@ def train_lora(
     config_path: str,
     lora_config_path: str,
     speaker_id: str | None = None,
+    max_steps_override: int | None = None,
+    batch_size_override: int | None = None,
+    base_weights_path: str | None = None,
 ):
     """Executes memory-safe LoRA fine-tuning tailored for Google Colab Free
     (T4 15GB).
@@ -86,6 +89,14 @@ def train_lora(
         cfg = yaml.safe_load(f)
     with open(lora_config_path, "r", encoding="utf-8") as f:
         lora_cfg = yaml.safe_load(f)
+
+    if max_steps_override is not None and max_steps_override > 0:
+        logger.info(f"Overriding max_steps from CLI/Form: {max_steps_override}")
+        lora_cfg["training"]["max_steps"] = max_steps_override
+
+    if batch_size_override is not None and batch_size_override > 0:
+        logger.info(f"Overriding batch_size from CLI/Form: {batch_size_override}")
+        lora_cfg["training"]["batch_size"] = batch_size_override
 
     # Verify Google Drive availability & speaker subdir
     base_checkpoints_dir = cfg["paths"]["checkpoints_dir"]
@@ -151,8 +162,11 @@ def train_lora(
 
     backbone_name = lora_cfg["training"].get("backbone", "f5-tts")
     logger.info(f"Loading Base TTS Model Adapter: {backbone_name}")
-    adapter = get_tts_model(backbone_name, config={"hidden_dim": 512})
-    model = adapter.build_lora_model(lora_cfg.get("lora", {}))
+    adapter = get_tts_model(backbone_name, config={"hidden_dim": 1024})
+    model = adapter.build_lora_model(
+        lora_cfg.get("lora", {}),
+        base_weights_path=base_weights_path,
+    )
     if model is None:
         logger.warning("Adapter returned None for LoRA wrapper; instantiating linear fallback.")
         model = torch.nn.Sequential(
@@ -226,7 +240,7 @@ def train_lora(
             try:
                 with accelerator.accumulate(model):
                     waveforms = batch["waveforms"]
-                    texts = batch.get("phonemes") or batch.get("texts")
+                    texts = batch.get("texts") or batch.get("phonemes")
 
                     unwrapped = accelerator.unwrap_model(model)
                     if hasattr(unwrapped, "mel_spec"):
@@ -295,6 +309,22 @@ if __name__ == "__main__":
     parser.add_argument(
         "--speaker-id", type=str, default=None, help="Target speaker ID for isolated training"
     )
+    parser.add_argument(
+        "--max-steps", type=int, default=None, help="Override maximum training steps"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=None, help="Override training batch size"
+    )
+    parser.add_argument(
+        "--base-weights", type=str, default=None, help="Path to pretrained base F5-TTS weights"
+    )
     args = parser.parse_args()
 
-    train_lora(args.config, args.lora_config, speaker_id=args.speaker_id)
+    train_lora(
+        args.config,
+        args.lora_config,
+        speaker_id=args.speaker_id,
+        max_steps_override=args.max_steps,
+        batch_size_override=args.batch_size,
+        base_weights_path=args.base_weights,
+    )

@@ -18,7 +18,7 @@ class BaseTTSAdapter(ABC):
         pass
 
     @abstractmethod
-    def build_lora_model(self, lora_config: Dict[str, Any]) -> Any:
+    def build_lora_model(self, lora_config: Dict[str, Any], **kwargs) -> Any:
         """Wraps base model with trainable LoRA parameters."""
         pass
 

@@ -48,8 +48,12 @@ class F5TTSAdapter(BaseTTSAdapter):
             logger.error(f"Failed loading base weights: {e}")
             raise
 
-    def build_lora_model(self, lora_config: Dict[str, Any]) -> Any:
-        """Builds F5-TTS Flow Matching CFM model and wraps with LoRA adapters for memory-safe training."""
+    def build_lora_model(
+        self,
+        lora_config: Dict[str, Any],
+        base_weights_path: Optional[str] = None,
+    ) -> Any:
+        """Builds F5-TTS Flow Matching CFM model with pretrained backbone and wraps with LoRA adapters."""
         logger.info(
             f"Configuring LoRA for F5-TTS -> Rank: {lora_config.get('r', 16)}, Alpha: {lora_config.get('lora_alpha', 32)}"
         )
@@ -62,7 +66,8 @@ class F5TTSAdapter(BaseTTSAdapter):
                 from f5_tts.model import CFM, DiT
                 from f5_tts.model.utils import get_tokenizer
 
-                vocab_char_map, vocab_size = get_tokenizer("custom", "custom")
+                # Base F5-TTS is pretrained on Emilia_ZH_EN pinyin tokenizer
+                vocab_char_map, vocab_size = get_tokenizer("Emilia_ZH_EN", "pinyin")
                 dit_transformer = DiT(
                     dim=1024,
                     depth=22,
@@ -73,6 +78,38 @@ class F5TTSAdapter(BaseTTSAdapter):
                     text_num_embeds=vocab_size,
                     mel_dim=100,
                 )
+
+                # Auto-detect cached base weights if not explicitly provided
+                if not base_weights_path:
+                    default_cached = "/content/drive/MyDrive/tts-project/00_base_models/f5-tts/model_base.safetensors"
+                    if os.path.exists(default_cached):
+                        base_weights_path = default_cached
+
+                # Load pretrained weights into DiT BEFORE wrapping with LoRA
+                if base_weights_path and os.path.exists(base_weights_path):
+                    logger.info(f"Loading pretrained F5-TTS base weights into DiT: {base_weights_path}")
+                    if base_weights_path.endswith(".safetensors"):
+                        from safetensors.torch import load_file
+                        state_dict = load_file(base_weights_path)
+                    else:
+                        state_dict = torch.load(base_weights_path, map_location="cpu")
+
+                    # Strip ema_model. and transformer. prefixes common in F5-TTS releases
+                    clean_state = {}
+                    for k, v in state_dict.items():
+                        clean_k = k
+                        if clean_k.startswith("ema_model."):
+                            clean_k = clean_k[len("ema_model."):]
+                        if clean_k.startswith("transformer."):
+                            clean_k = clean_k[len("transformer."):]
+                        clean_state[clean_k] = v
+
+                    missing, unexpected = dit_transformer.load_state_dict(clean_state, strict=False)
+                    logger.info(
+                        f"Pretrained base weights loaded successfully (Missing: {len(missing)}, Unexpected: {len(unexpected)})"
+                    )
+                else:
+                    logger.warning("No pretrained base weights found! DiT initialized from scratch.")
 
                 # Attach LoRA to DiT cross-attention layers
                 peft_conf = LoraConfig(
@@ -97,7 +134,7 @@ class F5TTSAdapter(BaseTTSAdapter):
                     vocab_char_map=vocab_char_map,
                 )
                 self.lora_model = cfm_model
-                logger.info("✅ F5-TTS Real CFM + DiT LoRA model initialized successfully!")
+                logger.info("✅ F5-TTS Real Pretrained CFM + DiT LoRA model initialized successfully!")
                 return self.lora_model
 
             except ImportError:
