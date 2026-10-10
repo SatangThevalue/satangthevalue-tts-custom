@@ -52,13 +52,18 @@ def run_master_pipeline_tests():
         assert "vocos_vocoder.pt" in cached_paths
         logger.info(f"Base Model cache hit verified: {cached_paths}")
 
-        # 2. Test Media Download Filename Sanitization
-        logger.info("[Test 2/6] Testing Ingestion Filename Sanitization...")
+        # 2. Test Media Download Filename Sanitization & URL ID Extraction
+        logger.info("[Test 2/6] Testing Ingestion Filename Sanitization & URL ID Extraction...")
+        from src.audio.download import extract_media_id_from_url
+        assert extract_media_id_from_url("https://youtu.be/1qfCQVhvudI") == "1qfCQVhvudI"
+        assert extract_media_id_from_url("https://www.youtube.com/watch?v=PRrSeyp-Hvk") == "PRrSeyp-Hvk"
+        assert extract_media_id_from_url("https://www.instagram.com/reel/C-xyz123/") == "C-xyz123"
+
         raw_title = '  Podcast: Ep. 12 [Best of 2026] / "Special Guest"? <Interview>  '
         clean_title = sanitize_filename(raw_title)
         assert ":" not in clean_title and "/" not in clean_title and "<" not in clean_title
         assert len(clean_title) <= 60
-        logger.info(f"Sanitized title: '{clean_title}'")
+        logger.info(f"Sanitized title: '{clean_title}' | Extracted ID verified: '1qfCQVhvudI'")
 
         # 3. Test Acoustic Voice Embedding & Target Voice Filter
         logger.info("[Test 3/6] Testing Acoustic Voice Embedding & Cosine Similarity...")
