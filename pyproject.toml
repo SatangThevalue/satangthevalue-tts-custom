@@ -9,8 +9,8 @@ authors = [
     { name = "Satang The Value", email = "thanaphol369@gmail.com" }
 ]
 dependencies = [
-    "torch==2.14.1",
-    "torchaudio==2.11.0",
+    "torch>=2.4.0",
+    "torchaudio>=2.4.0",
     "pythainlp==5.4.0",
     "phonemizer==3.4.0",
     "pypinyin==0.55.0",
