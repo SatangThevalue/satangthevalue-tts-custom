@@ -173,11 +173,9 @@ def train_lora(
         base_weights_path=base_weights_path,
     )
     if model is None:
-        logger.warning("Adapter returned None for LoRA wrapper; instantiating linear fallback.")
-        model = torch.nn.Sequential(
-            torch.nn.Linear(512, 1024),
-            torch.nn.GELU(),
-            torch.nn.Linear(1024, 512),
+        raise RuntimeError(
+            "CRITICAL: Failed to build F5-TTS model. Refusing to train dummy fallback. "
+            "Ensure f5-tts is installed and data/vocab.txt is present."
         )
 
     if latest_ckpt and os.path.exists(latest_ckpt):

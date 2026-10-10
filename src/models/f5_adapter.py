@@ -153,7 +153,7 @@ class F5TTSAdapter(BaseTTSAdapter):
                 return self.lora_model
 
             except ImportError:
-                logger.warning("f5_tts library not installed; instantiating stand-in transformer module.")
+                logger.warning("f5_tts library not installed; instantiating stand-in transformer module for headless tests.")
                 class StandinTransformer(torch.nn.Module):
                     def __init__(self, dim: int = 512):
                         super().__init__()
@@ -164,8 +164,8 @@ class F5TTSAdapter(BaseTTSAdapter):
                 return base
 
         except Exception as e:
-            logger.warning(f"Could not initialize PEFT/Torch LoRA model: {e}")
-            return None
+            logger.error(f"Failed to build F5-TTS LoRA model: {e}")
+            raise RuntimeError(f"F5-TTS model build failed: {e}") from e
 
     def export_onnx(
         self,
