@@ -9,7 +9,7 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger("model_downloader")
 
-# Registry of 100% Commercial-friendly Base Models (MIT / Apache-2.0)
+# Registry of 100% Commercial-friendly Base Models (MIT / Apache-2.0 / CC-BY)
 MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "f5-tts": {
         "license": "MIT (100% Commercial)",
@@ -19,6 +19,21 @@ MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
             "model_base.safetensors": {
                 "url": "https://huggingface.co/SWivid/F5-TTS/resolve/main/F5TTS_Base/model_1200000.safetensors",
                 "approx_size_mb": 1200,
+            },
+            "vocos_vocoder.pt": {
+                "url": "https://huggingface.co/charactr/vocos-mel-24khz/resolve/main/pytorch_model.bin",
+                "approx_size_mb": 50,
+            },
+        },
+    },
+    "f5-tts-thai": {
+        "license": "CC-BY-4.0 / MIT (Commercial OK)",
+        "description": "F5-TTS Pretrained Thai (VIZINTZOR) - 300 Hrs Porjai Dataset",
+        "repo_id": "VIZINTZOR/F5-TTS-THAI",
+        "files": {
+            "model_1000000.pt": {
+                "url": "https://huggingface.co/VIZINTZOR/F5-TTS-THAI/resolve/main/model_1000000.pt",
+                "approx_size_mb": 1175,
             },
             "vocos_vocoder.pt": {
                 "url": "https://huggingface.co/charactr/vocos-mel-24khz/resolve/main/pytorch_model.bin",

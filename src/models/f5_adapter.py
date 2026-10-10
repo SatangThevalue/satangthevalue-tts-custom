@@ -96,9 +96,12 @@ class F5TTSAdapter(BaseTTSAdapter):
 
             # Auto-detect cached base weights if not explicitly provided
             if not base_weights_path:
-                default_cached = "/content/drive/MyDrive/tts-project/00_base_models/f5-tts/model_base.safetensors"
-                if os.path.exists(default_cached):
-                    base_weights_path = default_cached
+                default_cached_thai = "/content/drive/MyDrive/tts-project/00_base_models/f5-tts-thai/model_1000000.pt"
+                default_cached_en = "/content/drive/MyDrive/tts-project/00_base_models/f5-tts/model_base.safetensors"
+                if os.path.exists(default_cached_thai):
+                    base_weights_path = default_cached_thai
+                elif os.path.exists(default_cached_en):
+                    base_weights_path = default_cached_en
 
             # Load pretrained weights into DiT BEFORE wrapping with LoRA
             if base_weights_path and os.path.exists(base_weights_path):
