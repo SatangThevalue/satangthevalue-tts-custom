@@ -14,6 +14,13 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger("finetune_lora")
 
+# Prevent incompatible torchao version conflict in PEFT
+try:
+    import peft.import_utils
+    peft.import_utils.is_torchao_available = lambda: False
+except Exception:
+    pass
+
 
 def get_latest_checkpoint(checkpoints_dir: str) -> tuple[str | None, int]:
     """Finds the latest step directory to support seamless training resume."""

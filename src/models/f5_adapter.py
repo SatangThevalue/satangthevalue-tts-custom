@@ -61,11 +61,15 @@ class F5TTSAdapter(BaseTTSAdapter):
             import torch
             try:
                 import peft
+                import peft.import_utils
+                peft.import_utils.is_torchao_available = lambda: False
             except ImportError:
                 import subprocess, sys
                 logger.info("Auto-installing missing training dependency: peft...")
                 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "peft"])
                 import peft
+                import peft.import_utils
+                peft.import_utils.is_torchao_available = lambda: False
 
             from peft import LoraConfig, get_peft_model
             from f5_tts.model import CFM, DiT
