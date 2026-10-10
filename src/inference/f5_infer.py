@@ -236,7 +236,10 @@ def synthesize_f5(
                 from safetensors.torch import load_file
                 state = load_file(ckpt_path)
             else:
-                state = torch.load(ckpt_path, map_location=device)
+                try:
+                    state = torch.load(ckpt_path, map_location=device, weights_only=False)
+                except TypeError:
+                    state = torch.load(ckpt_path, map_location=device)
 
             clean_state = {}
             for k, v in state.items():
@@ -272,7 +275,7 @@ def synthesize_f5(
 
     # 5. Preprocess reference audio
     audio_in, ref_text_proc = preprocess_ref_audio_text(
-        ref_audio_path, ref_text, device=device
+        ref_audio_path, ref_text, show_info=logger.info
     )
 
     # 6. F5-TTS Flow Matching Diffusion inference
@@ -286,6 +289,7 @@ def synthesize_f5(
         speed=speed_factor,
         nfe_step=nfe_steps,
         show_info=logger.info,
+        device=device,
     )
 
     # Write raw output

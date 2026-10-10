@@ -172,10 +172,11 @@ def train_lora(
         lora_cfg.get("lora", {}),
         base_weights_path=base_weights_path,
     )
-    if model is None:
+    if model is None or not hasattr(model, "mel_spec"):
         raise RuntimeError(
-            "CRITICAL: Failed to build F5-TTS model. Refusing to train dummy fallback. "
-            "Ensure f5-tts is installed and data/vocab.txt is present."
+            "CRITICAL: Failed to build real F5-TTS CFM model! "
+            "Model is missing mel_spec attribute. Refusing to train dummy fallback. "
+            "Ensure 'peft' and 'f5-tts' are properly installed in the environment."
         )
 
     if latest_ckpt and os.path.exists(latest_ckpt):
@@ -245,18 +246,8 @@ def train_lora(
                     waveforms = batch["waveforms"]
                     texts = batch.get("texts") or batch.get("phonemes")
 
-                    unwrapped = accelerator.unwrap_model(model)
-                    if hasattr(unwrapped, "mel_spec"):
-                        # True Conditional Flow Matching (CFM) Loss
-                        loss, cond, pred = model(waveforms, texts)
-                    else:
-                        dummy_in = torch.randn(
-                            waveforms.shape[0],
-                            512,
-                            device=accelerator.device,
-                        )
-                        output = model(dummy_in)
-                        loss = torch.mean((output - dummy_in) ** 2)
+                    # True Conditional Flow Matching (CFM) Loss
+                    loss, cond, pred = model(waveforms, texts)
 
                     accelerator.backward(loss)
                     optimizer.step()
