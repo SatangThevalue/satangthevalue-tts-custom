@@ -29,7 +29,7 @@ dependencies = [
     "tqdm==4.70.1",
     "psutil==7.2.2",
     "scipy>=1.12.0",
-    "numpy>=1.26.0",
+    "numpy<2.0.0",
     "yt-dlp==2026.8.19",
     "av==18.1.0",
     "f5-tts==1.1.22",
