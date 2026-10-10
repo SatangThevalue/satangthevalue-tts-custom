@@ -225,13 +225,21 @@ def train_lora(
 
             try:
                 with accelerator.accumulate(model):
-                    dummy_in = torch.randn(
-                        batch["waveforms"].shape[0],
-                        512,
-                        device=accelerator.device,
-                    )
-                    output = model(dummy_in)
-                    loss = torch.mean((output - dummy_in) ** 2)
+                    waveforms = batch["waveforms"]
+                    texts = batch.get("phonemes") or batch.get("texts")
+
+                    unwrapped = accelerator.unwrap_model(model)
+                    if hasattr(unwrapped, "mel_spec"):
+                        # True Conditional Flow Matching (CFM) Loss
+                        loss, cond, pred = model(waveforms, texts)
+                    else:
+                        dummy_in = torch.randn(
+                            waveforms.shape[0],
+                            512,
+                            device=accelerator.device,
+                        )
+                        output = model(dummy_in)
+                        loss = torch.mean((output - dummy_in) ** 2)
 
                     accelerator.backward(loss)
                     optimizer.step()

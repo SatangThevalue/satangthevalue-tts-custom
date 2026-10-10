@@ -30,7 +30,9 @@ dependencies = [
     "scipy>=1.12.0",
     "numpy>=1.26.0",
     "yt-dlp>=2024.0.0",
-    "av>=12.0.0"
+    "av>=12.0.0",
+    "f5-tts>=1.0.0",
+    "vocos>=0.1.0"
 ]
 
 [project.optional-dependencies]

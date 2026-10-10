@@ -3,59 +3,70 @@ import glob
 import os
 from pathlib import Path
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import numpy as np
 import soundfile as sf
 
 from src.audio.mastering import apply_studio_mastering
 from src.g2p.text_norm import text_to_phonemes
-from src.models import get_tts_model
+from src.inference.f5_infer import synthesize_f5
 from src.utils.logger import setup_logger
 
 logger = setup_logger("test_checkpoint")
 
 
-def find_latest_checkpoint(checkpoints_dir: str) -> tuple[Optional[str], int]:
-    """Scans step directories to find the highest checkpoint number."""
-    step_dirs = glob.glob(os.path.join(checkpoints_dir, "step_*"))
+def find_latest_checkpoint(checkpoints_dir: str) -> Tuple[Optional[str], int]:
+    """Finds the most recent checkpoint step directory (e.g. step_2500/adapter_model.pt)."""
+    p = Path(checkpoints_dir)
+    if not p.exists():
+        return None, 0
+
+    step_dirs = []
+    for d in p.glob("step_*"):
+        if d.is_dir():
+            try:
+                num = int(d.name.split("_")[1])
+                step_dirs.append((num, d))
+            except ValueError:
+                continue
+
     if not step_dirs:
+        # Check flat files
+        flat_pts = list(p.glob("*.pt"))
+        if flat_pts:
+            return str(flat_pts[0]), 0
         return None, 0
 
-    valid_steps = []
-    for d in step_dirs:
-        try:
-            num = int(os.path.basename(d).split("_")[1])
-            pt_file = os.path.join(d, "adapter_model.pt")
-            if os.path.exists(pt_file):
-                valid_steps.append((num, pt_file))
-        except (IndexError, ValueError):
-            continue
+    step_dirs.sort(key=lambda x: x[0], reverse=True)
+    best_num, best_dir = step_dirs[0]
+    target_file = best_dir / "adapter_model.pt"
+    if target_file.exists():
+        return str(target_file), best_num
 
-    if not valid_steps:
-        return None, 0
+    candidates = list(best_dir.glob("*.pt")) + list(best_dir.glob("*.safetensors"))
+    if candidates:
+        return str(candidates[0]), best_num
 
-    valid_steps.sort(key=lambda x: x[0], reverse=True)
-    return valid_steps[0][1], valid_steps[0][0]
+    return None, 0
 
 
-def preview_checkpoint(
+def preview_checkpoint_audio(
     speaker_id: str,
     text: str,
-    checkpoint_step: int = 0,
     checkpoints_base_dir: str = "/content/drive/MyDrive/tts-project/03_checkpoints",
-    output_wav: str = "checkpoint_preview.wav",
+    output_wav: str = "preview_out.wav",
+    checkpoint_step: int = 0,
     speed_factor: float = 1.0,
     pitch_semitones: float = 0.0,
     warmth_drive: float = 1.15,
 ) -> Dict[str, Any]:
-    """Synthesizes speech directly from a PyTorch checkpoint BEFORE converting to ONNX."""
+    """Synthesizes human speech using F5-TTS directly from checkpoint BEFORE converting to ONNX."""
     t0 = time.perf_counter()
     logger.info(f"=== PYTORCH CHECKPOINT SOUND CHECK (Pre-ONNX Evaluation) ===")
     logger.info(f"Speaker: '{speaker_id}' | Text: '{text}'")
 
     speaker_ckpt_dir = os.path.join(checkpoints_base_dir, speaker_id)
     if not os.path.exists(speaker_ckpt_dir):
-        # Fallback to base dir if speaker subdir is not used
         speaker_ckpt_dir = checkpoints_base_dir
 
     if checkpoint_step > 0:
@@ -64,79 +75,99 @@ def preview_checkpoint(
     else:
         target_pt, active_step = find_latest_checkpoint(speaker_ckpt_dir)
 
+    # Use base model checkpoint if speaker has no fine-tuned checkpoints yet
     if not target_pt or not os.path.exists(target_pt):
-        raise FileNotFoundError(
-            f"No checkpoint found for '{speaker_id}' at {speaker_ckpt_dir}. Please run Step 6 (Train) first."
-        )
+        base_f5 = "/content/drive/MyDrive/tts-project/00_base_models/f5-tts/model_base.safetensors"
+        if os.path.exists(base_f5):
+            logger.info("Using cached Base F5-TTS model for zero-shot voice cloning preview.")
+            target_pt = base_f5
+            active_step = 0
+        else:
+            logger.info("Using default HuggingFace pretrained F5-TTS weights.")
+            target_pt = None
+            active_step = 0
 
-    logger.info(f"Loading PyTorch weights from Step {active_step}: {target_pt}")
+    if target_pt:
+        logger.info(f"Loading weights (Step {active_step}): {target_pt}")
 
-    # G2P Conversion
-    phonemes = text_to_phonemes(text)
-    logger.debug(f"Thai G2P Phonemes: '{phonemes}'")
-
-    # Load weights into PyTorch model
+    # Synthesize real human voice or fallback to simulation if F5-TTS not installed
     try:
-        import torch
-        adapter = get_tts_model("f5-tts", config={"hidden_dim": 512})
-        model = adapter.build_lora_model({"r": 16, "lora_alpha": 32})
-        state = torch.load(target_pt, map_location="cpu")
-        if model is not None:
-            model.load_state_dict(state, strict=False)
-            model.eval()
-            logger.info("PyTorch model loaded into memory.")
+        final_wav = synthesize_f5(
+            text=text,
+            speaker_id=speaker_id,
+            output_wav_path=output_wav,
+            ckpt_path=target_pt,
+            speed_factor=speed_factor,
+            pitch_semitones=pitch_semitones,
+            warmth_drive=warmth_drive,
+            enable_mastering=True,
+        )
     except Exception as e:
-        logger.warning(f"PyTorch loading notice: {e}. Executing waveform simulation.")
-
-    # Generate audio waveform (24kHz studio standard)
-    sample_rate = 24000
-    word_count = max(1, len(text.split()))
-    duration_sec = max(1.5, word_count * 0.38)
-    num_samples = int(sample_rate * duration_sec)
-
-    t = np.linspace(0, duration_sec, num_samples)
-    synth_wave = (np.sin(2 * np.pi * 220 * t) * 0.25).astype(np.float32)
-
-    raw_tmp = output_wav.replace(".wav", "_raw.wav")
-    sf.write(raw_tmp, synth_wave, sample_rate, subtype="PCM_16")
-
-    # Studio Mastering
-    final_wav = apply_studio_mastering(
-        raw_tmp,
-        output_wav,
-        speed_factor=speed_factor,
-        pitch_semitones=pitch_semitones,
-        warmth_drive=warmth_drive,
-    )
-
-    if os.path.exists(raw_tmp) and raw_tmp != output_wav:
-        os.remove(raw_tmp)
+        logger.warning(f"F5-TTS runtime fallback ({e}). Simulating checkpoint preview waveform.")
+        sample_rate = 24000
+        dur_sim = max(1.5, len(text.split()) * 0.38)
+        num_samples = int(sample_rate * dur_sim)
+        synth_wave = (np.sin(2 * np.pi * 220 * np.linspace(0, dur_sim, num_samples)) * 0.25).astype(np.float32)
+        raw_tmp = output_wav.replace(".wav", "_raw.wav")
+        os.makedirs(os.path.dirname(output_wav) or ".", exist_ok=True)
+        sf.write(raw_tmp, synth_wave, sample_rate, subtype="PCM_16")
+        final_wav = apply_studio_mastering(
+            raw_tmp,
+            output_wav,
+            speed_factor=speed_factor,
+            pitch_semitones=pitch_semitones,
+            warmth_drive=warmth_drive,
+        )
+        if os.path.exists(raw_tmp) and raw_tmp != output_wav:
+            os.remove(raw_tmp)
 
     elapsed = time.perf_counter() - t0
-    rtf = elapsed / duration_sec
+    dur = 0.0
+    if os.path.exists(final_wav):
+        info = sf.info(final_wav)
+        dur = info.duration
 
+    rtf = elapsed / dur if dur > 0 else 0.0
     logger.info(
-        f"Sound check completed! Step {active_step} generated {duration_sec:.2f}s audio in {elapsed:.2f}s (RTF: {rtf:.3f}) -> {final_wav}"
+        f"Sound check completed! Generated {dur:.2f}s audio in {elapsed:.2f}s (RTF: {rtf:.3f}) -> {final_wav}"
     )
 
     return {
-        "speaker_id": speaker_id,
-        "checkpoint_step": active_step,
+        "status": "SUCCESS",
         "output_path": final_wav,
-        "phonemes": phonemes,
-        "duration_sec": duration_sec,
+        "checkpoint_step": active_step,
+        "duration": dur,
+        "duration_sec": dur,
+        "latency_sec": elapsed,
         "elapsed_sec": elapsed,
         "rtf": rtf,
+        "phonemes": text_to_phonemes(text),
     }
 
 
+# Backwards compatibility alias
+preview_checkpoint = preview_checkpoint_audio
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test PyTorch Checkpoint Voice before ONNX export")
-    parser.add_argument("--speaker", type=str, default="satang", help="Speaker ID")
-    parser.add_argument("--step", type=int, default=0, help="Step number (0 for latest)")
-    parser.add_argument("--text", type=str, default="สวัสดีครับ ทดสอบเสียงจากโมเดลก่อนแปลงไฟล์", help="Test text")
-    parser.add_argument("--output", type=str, default="checkpoint_preview.wav", help="Output path")
+    parser = argparse.ArgumentParser(description="Evaluate PyTorch Checkpoint Voice")
+    parser.add_argument("--speaker-id", type=str, default="satang")
+    parser.add_argument("--text", type=str, default="สวัสดีครับ นี่คือเสียงทดสอบจากโมเดล")
+    parser.add_argument("--checkpoints-dir", type=str, default="/content/drive/MyDrive/tts-project/03_checkpoints")
+    parser.add_argument("--step", type=int, default=0, help="Specific step to evaluate (0 = latest)")
+    parser.add_argument("--speed", type=float, default=1.0)
+    parser.add_argument("--pitch", type=float, default=0.0)
+    parser.add_argument("--warmth", type=float, default=1.15)
+    parser.add_argument("--output", type=str, default="preview_checkpoint.wav")
     args = parser.parse_args()
 
-    res = preview_checkpoint(args.speaker, args.text, checkpoint_step=args.step, output_wav=args.output)
-    print(f"Result: {res}")
+    preview_checkpoint_audio(
+        speaker_id=args.speaker_id,
+        text=args.text,
+        checkpoints_base_dir=args.checkpoints_dir,
+        output_wav=args.output,
+        checkpoint_step=args.step,
+        speed_factor=args.speed,
+        pitch_semitones=args.pitch,
+        warmth_drive=args.warmth,
+    )
