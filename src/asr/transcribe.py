@@ -314,8 +314,9 @@ def transcribe_dataset(
 
             if (idx + 1) % 25 == 0 or (idx + 1) == len(wav_files):
                 f_out.flush()  # Periodic flush
+                pct = ((idx + 1) / len(wav_files)) * 100
                 logger.info(
-                    f"ASR Progress: [{idx + 1}/{len(wav_files)}] chunks evaluated ({valid_count} accepted)."
+                    f"🎙️ ASR Progress: [{idx + 1}/{len(wav_files)}] ({pct:.1f}%) | {valid_count} chunks transcribed."
                 )
 
     logger.info(
