@@ -29,21 +29,33 @@ def audit_speaker_dataset(
         }
 
     records: List[Dict[str, Any]] = []
+    available_speakers = set()
     with open(metadata_path, "r", encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 try:
                     item = json.loads(line)
-                    if speaker_id is None or item.get("speaker") == speaker_id:
+                    spk = item.get("speaker", "default")
+                    available_speakers.add(spk)
+                    if speaker_id is None or spk == speaker_id:
                         records.append(item)
                 except Exception:
                     continue
 
     if not records:
-        logger.warning(f"No records found for speaker: {speaker_id}")
+        logger.warning(
+            f"No records found for speaker: '{speaker_id}'. Available speakers: {sorted(list(available_speakers))}"
+        )
+        print(f"\n⚠️ ไม่พบข้อมูลของ Speaker: '{speaker_id}' ใน metadata.jsonl")
+        if available_speakers:
+            print("💡 รายชื่อ Speaker ที่มีอยู่ในระบบให้เลือกใช้:")
+            for s in sorted(list(available_speakers)):
+                print(f"   • {s}")
+        print()
         return {
             "status": "EMPTY",
             "speaker_id": speaker_id or "all",
+            "available_speakers": sorted(list(available_speakers)),
             "total_chunks": 0,
             "total_minutes": 0.0,
             "verdict": "NO_SAMPLES",
