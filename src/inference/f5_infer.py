@@ -187,7 +187,44 @@ def synthesize_f5(
         vocab_p = Path(__file__).resolve().parent.parent.parent / "data" / "vocab.txt"
 
     logger.info(f"Loading Base F5-TTS DiT on {device} (Vocab: {vocab_p}) from: {base_weights}")
-    tts_model = load_model(DiT, model_cfg, base_weights, vocab_file=str(vocab_p), device=device)
+    from f5_tts.model.utils import get_tokenizer
+    vocab_char_map, vocab_size = get_tokenizer(str(vocab_p), "custom")
+    tts_model = DiT(
+        **model_cfg,
+        text_num_embeds=vocab_size,
+        mel_dim=100,
+    ).to(device)
+
+    # Load base weights safely with Thai embedding expansion
+    if base_weights.endswith(".safetensors"):
+        from safetensors.torch import load_file
+        base_state = load_file(base_weights)
+    else:
+        base_state = torch.load(base_weights, map_location=device)
+
+    clean_base = {}
+    for k, v in base_state.items():
+        clean_k = k
+        for pfx in ["ema_model.", "transformer."]:
+            if clean_k.startswith(pfx):
+                clean_k = clean_k[len(pfx):]
+        clean_base[clean_k] = v
+
+    base_embed = None
+    for k in list(clean_base.keys()):
+        if "text_embed" in k and "weight" in k and getattr(clean_base[k], "ndim", 0) == 2:
+            base_embed = clean_base.pop(k)
+            break
+
+    if base_embed is not None:
+        for name, param in tts_model.named_parameters():
+            if "text_embed" in name and "weight" in name and param.ndim == 2:
+                num_copy = min(base_embed.shape[0], param.shape[0])
+                param.data[:num_copy] = base_embed.data[:num_copy].to(device)
+                break
+
+    tts_model.load_state_dict(clean_base, strict=False)
+    tts_model.eval()
 
     # 3. If custom checkpoint provided, apply adapter / fine-tuned weights
     if ckpt_path and os.path.exists(ckpt_path) and ckpt_path != base_weights:

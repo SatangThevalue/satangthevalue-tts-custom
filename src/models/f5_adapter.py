@@ -111,13 +111,22 @@ class F5TTSAdapter(BaseTTSAdapter):
                         clean_state[clean_k] = v
 
                     # Seamlessly adapt text embedding table for Thai extension
-                    base_embed = clean_state.pop("text_embed.weight", None)
+                    base_embed = None
+                    for k in list(clean_state.keys()):
+                        if "text_embed" in k and "weight" in k and getattr(clean_state[k], "ndim", 0) == 2:
+                            base_embed = clean_state.pop(k)
+                            break
+
                     if base_embed is not None:
-                        num_copy = min(base_embed.shape[0], dit_transformer.text_embed.weight.shape[0])
-                        dit_transformer.text_embed.weight.data[:num_copy] = base_embed.data[:num_copy]
-                        logger.info(
-                            f"Mapped {num_copy} base token embeddings. {vocab_size - num_copy} Thai tokens ready to learn!"
-                        )
+                        for name, param in dit_transformer.named_parameters():
+                            if "text_embed" in name and "weight" in name and param.ndim == 2:
+                                num_copy = min(base_embed.shape[0], param.shape[0])
+                                param.data[:num_copy] = base_embed.data[:num_copy]
+                                logger.info(
+                                    f"Mapped {num_copy} base token embeddings into {name}. "
+                                    f"{param.shape[0] - num_copy} Thai tokens ready to learn!"
+                                )
+                                break
 
                     missing, unexpected = dit_transformer.load_state_dict(clean_state, strict=False)
                     logger.info(
