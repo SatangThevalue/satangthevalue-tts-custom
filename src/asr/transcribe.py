@@ -3,6 +3,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import shutil
 import time
 from typing import Optional
 import numpy as np
@@ -82,6 +83,28 @@ except Exception:
     pass
 
 
+def clean_corrupt_drive_cache(target_dir: str):
+    """Detects and purges text symlinks created on Google Drive FUSE which cause
+    'Unsupported model binary version (v774843950)' CTranslate2 errors.
+    """
+    p = Path(target_dir)
+    if not p.exists():
+        return
+
+    for bin_file in list(p.rglob("model.bin")):
+        try:
+            if bin_file.stat().st_size < 1024 * 1024:  # True model.bin is > 1.5 GB
+                with open(bin_file, "rb") as f:
+                    head = f.read(4)
+                    if head.startswith(b".") or head.startswith(b"vers"):
+                        logger.warning(
+                            f"Purging corrupt FUSE symlink pointer at: {bin_file}"
+                        )
+                        shutil.rmtree(bin_file.parent, ignore_errors=True)
+        except Exception:
+            pass
+
+
 def load_audio_for_whisper(audio_path: str) -> np.ndarray:
     """Loads WAV audio via soundfile directly into float32 mono 16kHz array.
     Completely bypasses PyAV container bugs and metadata_errors keyword issues.
@@ -106,7 +129,6 @@ def transcribe_chunk(
     """Transcribes a single audio chunk using Faster-Whisper.
     Filters out hallucinations if average log probability is lower than threshold.
     """
-    logger.debug(f"Transcribing chunk: {os.path.basename(audio_path)}")
     t0 = time.perf_counter()
 
     try:
@@ -138,7 +160,6 @@ def transcribe_chunk(
                 logprobs.append(seg.avg_logprob)
 
         if not full_text:
-            logger.debug(f"Empty transcription returned for {os.path.basename(audio_path)}")
             return None
 
         combined_text = " ".join(full_text).strip()
@@ -147,7 +168,7 @@ def transcribe_chunk(
         calc_duration = info.duration if hasattr(info, "duration") and info.duration > 0 else duration_sec
 
         logger.debug(
-            f"Transcript: '{combined_text}' | Duration: {calc_duration:.2f}s | avg_logprob: {avg_logprob:.3f} | Elapsed: {elapsed:.2f}s"
+            f"Transcript: '{combined_text[:30]}...' | Duration: {calc_duration:.2f}s | avg_logprob: {avg_logprob:.3f} | Elapsed: {elapsed:.2f}s"
         )
 
         if avg_logprob < min_logprob:
@@ -168,66 +189,79 @@ def transcribe_chunk(
         return None
 
 
+def init_whisper_engine(
+    model_size: str = "large-v3",
+    download_root: Optional[str] = None,
+):
+    """Initializes Faster-Whisper with automatic recovery from corrupted FUSE caches and CUDA fallbacks."""
+    from faster_whisper import WhisperModel
+
+    setup_cuda_shared_libraries()
+
+    # If download_root is on Google Drive FUSE, purge any corrupt text symlinks
+    if download_root and "/content/drive" in download_root:
+        clean_corrupt_drive_cache(download_root)
+
+    has_cuda = torch is not None and torch.cuda.is_available()
+
+    # Try CUDA first if available
+    if has_cuda:
+        try:
+            logger.info(f"Loading Faster-Whisper ({model_size}) on CUDA GPU...")
+            model = WhisperModel(
+                model_size,
+                device="cuda",
+                compute_type="float16",
+                download_root=download_root,
+            )
+            # Run quick probe to verify CTranslate2 CUDA binary compatibility
+            test_audio = np.zeros(8000, dtype=np.float32)
+            _ = list(model.transcribe(test_audio, language="th")[0])
+            logger.info("✅ CUDA CTranslate2 acceleration verified and operational!")
+            return model
+        except Exception as cuda_err:
+            err_msg = str(cuda_err)
+            logger.warning(f"⚠️ CUDA init notice: {err_msg}")
+            # If corrupted binary on Google Drive FUSE was hit, purge and reset download_root
+            if "Unsupported model binary version" in err_msg or "774843950" in err_msg:
+                logger.warning("FUSE corrupt cache detected. Purging drive cache and switching to local NVMe...")
+                if download_root and os.path.exists(download_root):
+                    shutil.rmtree(download_root, ignore_errors=True)
+                try:
+                    return WhisperModel(model_size, device="cuda", compute_type="float16", download_root=None)
+                except Exception:
+                    pass
+
+    # Fallback to CPU int8 with local NVMe caching
+    logger.info(f"Loading Faster-Whisper ({model_size}) on CPU int8...")
+    try:
+        return WhisperModel(
+            model_size,
+            device="cpu",
+            compute_type="int8",
+            download_root=download_root,
+        )
+    except Exception as cpu_err:
+        err_msg = str(cpu_err)
+        if "Unsupported model binary version" in err_msg or "774843950" in err_msg:
+            logger.warning("Purging corrupt cache and reloading on CPU with local NVMe storage...")
+            if download_root and os.path.exists(download_root):
+                shutil.rmtree(download_root, ignore_errors=True)
+            return WhisperModel(model_size, device="cpu", compute_type="int8", download_root=None)
+        raise
+
+
 def transcribe_dataset(
     wavs_dir: str,
     output_jsonl: str,
     model_size: str = "large-v3",
     min_logprob: float = -0.5,
-    download_root: str = "/content/drive/MyDrive/tts-project/00_base_models/whisper",
+    download_root: Optional[str] = None,
 ) -> int:
     """Iterates through sliced audio chunks and produces metadata.jsonl with
     CUDA library auto-healing, permanent Google Drive caching, and CPU fallback.
     """
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError:
-        logger.error("❌ faster-whisper is not installed. Run: pip install faster-whisper")
-        raise ImportError("faster-whisper is required for ASR transcription. Run: pip install faster-whisper")
-
-    # 1. Setup CUDA shared libraries
-    setup_cuda_shared_libraries()
-
-    has_cuda = torch is not None and torch.cuda.is_available()
-    device = "cuda" if has_cuda else "cpu"
-    compute_type = "float16" if has_cuda else "int8"
-
-    os.makedirs(download_root, exist_ok=True)
-    logger.info(
-        f"Loading Faster-Whisper ({model_size}) on device={device} (compute_type={compute_type}, cache={download_root})..."
-    )
-
-    model = None
-    if device == "cuda":
-        try:
-            model = WhisperModel(
-                model_size,
-                device="cuda",
-                compute_type=compute_type,
-                download_root=download_root,
-            )
-            # Pre-flight CUDA sanity probe with 0.5s dummy audio
-            logger.info("Running CUDA pre-flight inference probe...")
-            test_audio = np.zeros(8000, dtype=np.float32)
-            _ = list(model.transcribe(test_audio, language="th")[0])
-            logger.info("✅ CUDA CTranslate2 acceleration verified and operational!")
-        except Exception as cuda_err:
-            logger.warning(
-                f"⚠️ CUDA CTranslate2 acceleration failed ({cuda_err}). Auto-switching Whisper to CPU int8..."
-            )
-            model = None
-
-    if model is None:
-        try:
-            model = WhisperModel(
-                model_size,
-                device="cpu",
-                compute_type="int8",
-                download_root=download_root,
-            )
-            logger.info("✅ Faster-Whisper initialized on CPU int8.")
-        except Exception as cpu_e:
-            logger.error(f"❌ Failed to load Faster-Whisper model on CPU: {cpu_e}")
-            raise
+    model = init_whisper_engine(model_size=model_size, download_root=download_root)
 
     wav_files = sorted(list(Path(wavs_dir).rglob("*.wav")))
     if not wav_files:
@@ -309,8 +343,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--download-root",
         type=str,
-        default="/content/drive/MyDrive/tts-project/00_base_models/whisper",
-        help="Google Drive path to cache Whisper model weights",
+        default=None,
+        help="Optional cache root (defaults to fast local NVMe)",
     )
     args = parser.parse_args()
 
