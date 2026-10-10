@@ -210,18 +210,20 @@ def synthesize_f5(
                 clean_k = clean_k[len(pfx):]
         clean_base[clean_k] = v
 
-    base_embed = None
+    # Adapt any shape-mismatched parameters (e.g. Thai text embedding expansion)
+    model_dict = tts_model.state_dict()
     for k in list(clean_base.keys()):
-        if "text_embed" in k and "weight" in k and getattr(clean_base[k], "ndim", 0) == 2:
-            base_embed = clean_base.pop(k)
-            break
-
-    if base_embed is not None:
-        for name, param in tts_model.named_parameters():
-            if "text_embed" in name and "weight" in name and param.ndim == 2:
-                num_copy = min(base_embed.shape[0], param.shape[0])
-                param.data[:num_copy] = base_embed.data[:num_copy].to(device)
-                break
+        if k in model_dict and hasattr(clean_base[k], "shape"):
+            if clean_base[k].shape != model_dict[k].shape:
+                logger.info(
+                    f"Adapting base shape mismatch for '{k}': "
+                    f"checkpoint {clean_base[k].shape} vs model {model_dict[k].shape}"
+                )
+                if "text_embed" in k and getattr(clean_base[k], "ndim", 0) == 2:
+                    num_copy = min(clean_base[k].shape[0], model_dict[k].shape[0])
+                    model_dict[k].data[:num_copy] = clean_base[k].data[:num_copy].to(device)
+                    logger.info(f"Copied {num_copy} base token embeddings into {k}")
+                clean_base.pop(k)
 
     tts_model.load_state_dict(clean_base, strict=False)
     tts_model.eval()
@@ -248,6 +250,11 @@ def synthesize_f5(
                     if clean_k.startswith(prefix):
                         clean_k = clean_k[len(prefix):]
                 clean_state[clean_k] = v
+
+            model_dict = tts_model.state_dict()
+            for k in list(clean_state.keys()):
+                if k not in model_dict or (hasattr(clean_state[k], "shape") and clean_state[k].shape != model_dict[k].shape):
+                    clean_state.pop(k)
 
             missing, unexpected = tts_model.load_state_dict(clean_state, strict=False)
             logger.info(

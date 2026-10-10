@@ -110,23 +110,23 @@ class F5TTSAdapter(BaseTTSAdapter):
                             clean_k = clean_k[len("transformer."):]
                         clean_state[clean_k] = v
 
-                    # Seamlessly adapt text embedding table for Thai extension
-                    base_embed = None
+                    # Adapt any shape-mismatched parameters (e.g. Thai text embedding expansion)
+                    model_dict = dit_transformer.state_dict()
                     for k in list(clean_state.keys()):
-                        if "text_embed" in k and "weight" in k and getattr(clean_state[k], "ndim", 0) == 2:
-                            base_embed = clean_state.pop(k)
-                            break
-
-                    if base_embed is not None:
-                        for name, param in dit_transformer.named_parameters():
-                            if "text_embed" in name and "weight" in name and param.ndim == 2:
-                                num_copy = min(base_embed.shape[0], param.shape[0])
-                                param.data[:num_copy] = base_embed.data[:num_copy]
+                        if k in model_dict and hasattr(clean_state[k], "shape"):
+                            if clean_state[k].shape != model_dict[k].shape:
                                 logger.info(
-                                    f"Mapped {num_copy} base token embeddings into {name}. "
-                                    f"{param.shape[0] - num_copy} Thai tokens ready to learn!"
+                                    f"Detected shape mismatch for '{k}': "
+                                    f"checkpoint {clean_state[k].shape} vs model {model_dict[k].shape}"
                                 )
-                                break
+                                if "text_embed" in k and getattr(clean_state[k], "ndim", 0) == 2:
+                                    num_copy = min(clean_state[k].shape[0], model_dict[k].shape[0])
+                                    model_dict[k].data[:num_copy] = clean_state[k].data[:num_copy]
+                                    logger.info(
+                                        f"Mapped {num_copy} base token embeddings into {k}. "
+                                        f"{model_dict[k].shape[0] - num_copy} Thai tokens ready to train!"
+                                    )
+                                clean_state.pop(k)
 
                     missing, unexpected = dit_transformer.load_state_dict(clean_state, strict=False)
                     logger.info(
