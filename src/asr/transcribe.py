@@ -1,10 +1,12 @@
 import argparse
+import ctypes
 import json
 import os
 from pathlib import Path
 import time
 from typing import Optional
 import numpy as np
+
 try:
     import torch
 except ImportError:
@@ -13,6 +15,53 @@ except ImportError:
 from src.utils.logger import setup_logger
 
 logger = setup_logger("asr_transcribe")
+
+
+def setup_cuda_shared_libraries():
+    """Finds and pre-loads NVIDIA CUDA 12 and cuDNN shared libraries into process memory.
+    Resolves 'Library libcublas.so.12 is not found or cannot be loaded' in Linux/Colab environments.
+    """
+    search_dirs = [
+        "/usr/local/cuda/lib64",
+        "/usr/local/cuda-12/lib64",
+        "/usr/lib/x86_64-linux-gnu",
+    ]
+
+    try:
+        import site
+        for s_dir in site.getsitepackages() + [site.getusersitepackages()]:
+            nvidia_base = os.path.join(s_dir, "nvidia")
+            if os.path.exists(nvidia_base):
+                for sub in os.listdir(nvidia_base):
+                    lib_dir = os.path.join(nvidia_base, sub, "lib")
+                    if os.path.exists(lib_dir):
+                        search_dirs.append(lib_dir)
+    except Exception:
+        pass
+
+    current_ld = os.environ.get("LD_LIBRARY_PATH", "")
+    all_paths = [d for d in search_dirs if os.path.exists(d)]
+    if all_paths:
+        os.environ["LD_LIBRARY_PATH"] = ":".join(all_paths) + ":" + current_ld
+
+    # Pre-load required libraries with ctypes into global process namespace
+    libs_to_load = [
+        "libcublas.so.12",
+        "libcublasLt.so.12",
+        "libcudnn_ops_infer.so.8",
+        "libcudnn.so.8",
+    ]
+    for lib_name in libs_to_load:
+        for d in all_paths:
+            candidate = os.path.join(d, lib_name)
+            if os.path.exists(candidate):
+                try:
+                    ctypes.CDLL(candidate, mode=ctypes.RTLD_GLOBAL)
+                    logger.debug(f"Pre-loaded CUDA library: {candidate}")
+                    break
+                except Exception:
+                    pass
+
 
 # Compatibility guard for PyAV in older Colab environments
 try:
@@ -127,7 +176,7 @@ def transcribe_dataset(
     download_root: str = "/content/drive/MyDrive/tts-project/00_base_models/whisper",
 ) -> int:
     """Iterates through sliced audio chunks and produces metadata.jsonl with
-    permanent Google Drive model caching and resume support.
+    CUDA library auto-healing, permanent Google Drive caching, and CPU fallback.
     """
     try:
         from faster_whisper import WhisperModel
@@ -135,24 +184,39 @@ def transcribe_dataset(
         logger.error("❌ faster-whisper is not installed. Run: pip install faster-whisper")
         raise ImportError("faster-whisper is required for ASR transcription. Run: pip install faster-whisper")
 
-    device = "cuda" if (torch is not None and torch.cuda.is_available()) else "cpu"
-    compute_type = "float16" if (torch is not None and torch.cuda.is_available()) else "int8"
+    # 1. Setup CUDA shared libraries
+    setup_cuda_shared_libraries()
+
+    has_cuda = torch is not None and torch.cuda.is_available()
+    device = "cuda" if has_cuda else "cpu"
+    compute_type = "float16" if has_cuda else "int8"
 
     os.makedirs(download_root, exist_ok=True)
     logger.info(
         f"Loading Faster-Whisper ({model_size}) on device={device} (compute_type={compute_type}, cache={download_root})..."
     )
-    try:
-        model = WhisperModel(
-            model_size,
-            device=device,
-            compute_type=compute_type,
-            download_root=download_root,
-        )
-    except Exception as e:
-        logger.warning(
-            f"Failed loading Whisper on {device} ({e}). Falling back to CPU int8..."
-        )
+
+    model = None
+    if device == "cuda":
+        try:
+            model = WhisperModel(
+                model_size,
+                device="cuda",
+                compute_type=compute_type,
+                download_root=download_root,
+            )
+            # Pre-flight CUDA sanity probe with 0.5s dummy audio
+            logger.info("Running CUDA pre-flight inference probe...")
+            test_audio = np.zeros(8000, dtype=np.float32)
+            _ = list(model.transcribe(test_audio, language="th")[0])
+            logger.info("✅ CUDA CTranslate2 acceleration verified and operational!")
+        except Exception as cuda_err:
+            logger.warning(
+                f"⚠️ CUDA CTranslate2 acceleration failed ({cuda_err}). Auto-switching Whisper to CPU int8..."
+            )
+            model = None
+
+    if model is None:
         try:
             model = WhisperModel(
                 model_size,
@@ -160,8 +224,9 @@ def transcribe_dataset(
                 compute_type="int8",
                 download_root=download_root,
             )
+            logger.info("✅ Faster-Whisper initialized on CPU int8.")
         except Exception as cpu_e:
-            logger.error(f"❌ Failed to load Faster-Whisper model on both GPU and CPU: {cpu_e}")
+            logger.error(f"❌ Failed to load Faster-Whisper model on CPU: {cpu_e}")
             raise
 
     wav_files = sorted(list(Path(wavs_dir).rglob("*.wav")))
