@@ -66,8 +66,14 @@ class F5TTSAdapter(BaseTTSAdapter):
                 from f5_tts.model import CFM, DiT
                 from f5_tts.model.utils import get_tokenizer
 
-                # Base F5-TTS is pretrained on Emilia_ZH_EN pinyin tokenizer
-                vocab_char_map, vocab_size = get_tokenizer("Emilia_ZH_EN", "pinyin")
+                # Resolve Thai-extended vocabulary file (2,611 tokens: Base + Full Thai Unicode)
+                vocab_path = Path("data/vocab.txt").resolve()
+                if not vocab_path.exists():
+                    vocab_path = Path(__file__).resolve().parent.parent.parent / "data" / "vocab.txt"
+
+                logger.info(f"Loading Thai-extended tokenizer from: {vocab_path}")
+                vocab_char_map, vocab_size = get_tokenizer(str(vocab_path), "custom")
+
                 dit_transformer = DiT(
                     dim=1024,
                     depth=22,
@@ -103,6 +109,15 @@ class F5TTSAdapter(BaseTTSAdapter):
                         if clean_k.startswith("transformer."):
                             clean_k = clean_k[len("transformer."):]
                         clean_state[clean_k] = v
+
+                    # Seamlessly adapt text embedding table for Thai extension
+                    base_embed = clean_state.pop("text_embed.weight", None)
+                    if base_embed is not None:
+                        num_copy = min(base_embed.shape[0], dit_transformer.text_embed.weight.shape[0])
+                        dit_transformer.text_embed.weight.data[:num_copy] = base_embed.data[:num_copy]
+                        logger.info(
+                            f"Mapped {num_copy} base token embeddings. {vocab_size - num_copy} Thai tokens ready to learn!"
+                        )
 
                     missing, unexpected = dit_transformer.load_state_dict(clean_state, strict=False)
                     logger.info(

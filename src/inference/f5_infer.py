@@ -6,7 +6,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -20,59 +20,111 @@ DEFAULT_WAVS_BASE = "/content/drive/MyDrive/tts-project/02_processed/wavs"
 DEFAULT_META_PATH = "/content/drive/MyDrive/tts-project/02_processed/metadata.jsonl"
 
 
+def _get_f5_base_weights() -> str:
+    """Finds or downloads the official F5-TTS Base model weights."""
+    candidates = [
+        "/content/drive/MyDrive/tts-project/00_base_models/f5-tts/model_base.safetensors",
+        "models/f5-tts/model_base.safetensors",
+    ]
+    for c in candidates:
+        if os.path.exists(c) and os.path.getsize(c) > 10 * 1024 * 1024:
+            logger.info(f"Using cached Base F5-TTS weights: {c}")
+            return c
+
+    logger.info("Base weights not found locally. Downloading from HuggingFace Hub (SWivid/F5-TTS)...")
+    from huggingface_hub import hf_hub_download
+    return hf_hub_download(
+        repo_id="SWivid/F5-TTS",
+        filename="F5TTS_Base/model_1200000.safetensors",
+        cache_dir="/content/drive/MyDrive/tts-project/00_base_models/f5-tts-hf",
+    )
+
+
 def _pick_best_ref_chunk(
     speaker_id: str,
     wavs_base: str = DEFAULT_WAVS_BASE,
     meta_path: str = DEFAULT_META_PATH,
-    min_dur: float = 5.0,
-    max_dur: float = 9.0,
-) -> tuple[str, str]:
+    min_dur: float = 2.0,
+    max_dur: float = 12.0,
+) -> Tuple[str, str]:
     """Picks the best reference audio chunk and its transcript for in-context cloning.
-    Prefers chunks 5–9s with highest ASR confidence (avg_logprob closest to 0).
+    First tries matching speaker, then falls back to any available processed audio.
     """
     import json
 
     candidates = []
-    if os.path.exists(meta_path):
-        with open(meta_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                    if rec.get("speaker", "default") != speaker_id:
+    fallback_candidates = []
+
+    meta_files = [
+        meta_path,
+        "/content/dataset_local/metadata.jsonl",
+        "/content/drive/MyDrive/tts-project/02_processed/metadata_raw.jsonl",
+    ]
+
+    for mf in meta_files:
+        if os.path.exists(mf):
+            with open(mf, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
                         continue
-                    dur = float(rec.get("duration", 0.0))
-                    logprob = float(rec.get("avg_logprob", -1.0))
-                    wav_p = rec.get("audio_path", "")
-                    text = rec.get("normalized_text", rec.get("text", ""))
-                    if min_dur <= dur <= max_dur and os.path.exists(wav_p) and text:
-                        candidates.append((logprob, dur, wav_p, text))
-                except Exception:
-                    continue
+                    try:
+                        rec = json.loads(line)
+                        dur = float(rec.get("duration", 0.0))
+                        logprob = float(rec.get("avg_logprob", -1.0))
+                        wav_p = rec.get("audio_path", "")
+                        text = rec.get("normalized_text", rec.get("text", ""))
 
-    if not candidates:
-        # Fallback: scan wavs directory for any .wav file
-        wavs_dir = Path(wavs_base) / speaker_id
-        if wavs_dir.exists():
-            wav_files = sorted(list(wavs_dir.glob("*.wav")))
-            if wav_files:
-                logger.warning(f"No metadata match for '{speaker_id}', using first wav file as reference.")
-                return str(wav_files[0]), ""
-        raise FileNotFoundError(
-            f"No reference audio chunks found for speaker '{speaker_id}'. "
-            f"Run Step 3-4 (Enhance + ASR) to prepare training data first."
+                        # Fix Drive to local NVMe path if running on Colab
+                        if not os.path.exists(wav_p) and "/content/drive/MyDrive/tts-project/02_processed" in wav_p:
+                            alt_p = wav_p.replace(
+                                "/content/drive/MyDrive/tts-project/02_processed",
+                                "/content/dataset_local",
+                            )
+                            if os.path.exists(alt_p):
+                                wav_p = alt_p
+
+                        if os.path.exists(wav_p) and text:
+                            fallback_candidates.append((logprob, dur, wav_p, text))
+                            rec_spk = rec.get("speaker", "default")
+                            if rec_spk == speaker_id or speaker_id == "default":
+                                candidates.append((logprob, dur, wav_p, text))
+                    except Exception:
+                        continue
+
+    active_pool = candidates if candidates else fallback_candidates
+    if active_pool:
+        # Prefer chunks in reasonable duration range [min_dur, max_dur]
+        preferred = [c for c in active_pool if min_dur <= c[1] <= max_dur]
+        chosen_pool = preferred if preferred else active_pool
+        chosen_pool.sort(key=lambda x: -x[0])  # Highest ASR confidence
+        best = chosen_pool[0]
+        logger.info(
+            f"Selected reference chunk for '{speaker_id}': {Path(best[2]).name} "
+            f"(dur={best[1]:.1f}s, logprob={best[0]:.3f})"
         )
+        return best[2], best[3]
 
-    # Sort by logprob descending (closest to 0 = most confident)
-    candidates.sort(key=lambda x: -x[0])
-    best = candidates[0]
-    logger.info(
-        f"Selected reference chunk for '{speaker_id}': {Path(best[2]).name} "
-        f"(dur={best[1]:.1f}s, logprob={best[0]:.3f})"
+    # Search directory tree for any available wav
+    search_dirs = [
+        Path(wavs_base) / speaker_id,
+        Path(wavs_base),
+        Path("/content/dataset_local/wavs") / speaker_id,
+        Path("/content/dataset_local/wavs"),
+        Path("/content/drive/MyDrive/tts-project/01_raw") / speaker_id,
+        Path("/content/drive/MyDrive/tts-project/01_raw"),
+    ]
+    for d in search_dirs:
+        if d.exists():
+            wav_files = sorted(list(d.glob("*.wav")) + list(d.glob("*.m4a")))
+            if wav_files:
+                logger.warning(f"No metadata match, using first audio file: {wav_files[0]}")
+                return str(wav_files[0]), ""
+
+    raise FileNotFoundError(
+        f"No reference audio chunks found for speaker '{speaker_id}'. "
+        f"Please run Step 2-4 (Upload audio & Transcribe) first so the model has reference voice to clone!"
     )
-    return best[2], best[3]
 
 
 def synthesize_f5(
@@ -120,7 +172,7 @@ def synthesize_f5(
 
     logger.info(f"Reference: {Path(ref_audio_path).name} | Ref text: '{ref_text[:40]}...'")
 
-    # 2. Load F5-TTS base model
+    # 2. Always load base DiT model first
     model_cfg = dict(
         dim=1024,
         depth=22,
@@ -129,33 +181,57 @@ def synthesize_f5(
         text_dim=512,
         conv_layers=4,
     )
-    if ckpt_path is None or not os.path.exists(ckpt_path):
+    base_weights = _get_f5_base_weights()
+    vocab_p = Path("data/vocab.txt").resolve()
+    if not vocab_p.exists():
+        vocab_p = Path(__file__).resolve().parent.parent.parent / "data" / "vocab.txt"
+
+    logger.info(f"Loading Base F5-TTS DiT on {device} (Vocab: {vocab_p}) from: {base_weights}")
+    tts_model = load_model(DiT, model_cfg, base_weights, vocab_file=str(vocab_p), device=device)
+
+    # 3. If custom checkpoint provided, apply adapter / fine-tuned weights
+    if ckpt_path and os.path.exists(ckpt_path) and ckpt_path != base_weights:
         try:
-            from huggingface_hub import hf_hub_download
-            ckpt_path = hf_hub_download(
-                repo_id="SWivid/F5-TTS",
-                filename="F5TTS_Base/model_1200000.safetensors",
-                cache_dir="/content/drive/MyDrive/tts-project/00_base_models/f5-tts-hf",
+            logger.info(f"Attempting to apply custom checkpoint weights: {ckpt_path}")
+            if ckpt_path.endswith(".safetensors"):
+                from safetensors.torch import load_file
+                state = load_file(ckpt_path)
+            else:
+                state = torch.load(ckpt_path, map_location=device)
+
+            clean_state = {}
+            for k, v in state.items():
+                clean_k = k
+                for prefix in [
+                    "transformer.base_model.model.",
+                    "transformer.",
+                    "base_model.model.",
+                    "ema_model.",
+                ]:
+                    if clean_k.startswith(prefix):
+                        clean_k = clean_k[len(prefix):]
+                clean_state[clean_k] = v
+
+            missing, unexpected = tts_model.load_state_dict(clean_state, strict=False)
+            logger.info(
+                f"Checkpoint weights applied successfully (Missing: {len(missing)}, Unexpected: {len(unexpected)})"
             )
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to load F5-TTS weights: {e}. "
-                "Ensure internet access and HuggingFace Hub is reachable."
+        except Exception as ckpt_err:
+            logger.warning(
+                f"Notice: Checkpoint at {ckpt_path} could not be overlaid ({ckpt_err}). "
+                f"Continuing with Base F5-TTS model for zero-shot voice cloning."
             )
 
-    logger.info(f"Loading F5-TTS DiT on {device}...")
-    tts_model = load_model(DiT, model_cfg, ckpt_path, device=device)
-
-    # 3. Load Vocos Vocoder
+    # 4. Load Vocos Vocoder (24kHz standard)
     logger.info("Loading Vocos 24kHz vocoder...")
     vocoder = load_vocoder(vocoder_name="vocos", is_local=False, device=device)
 
-    # 4. Preprocess reference audio
+    # 5. Preprocess reference audio
     audio_in, ref_text_proc = preprocess_ref_audio_text(
         ref_audio_path, ref_text, device=device
     )
 
-    # 5. F5-TTS inference
+    # 6. F5-TTS Flow Matching Diffusion inference
     raw_wav_path = output_wav_path.replace(".wav", "_raw_f5.wav")
     generated, target_sr, _ = infer_process(
         audio_in,
@@ -173,13 +249,13 @@ def synthesize_f5(
     sf.write(raw_wav_path, generated, target_sr, subtype="PCM_16")
     logger.info(f"F5-TTS raw generation complete ({len(generated)/target_sr:.2f}s)")
 
-    # 6. Studio DSP Mastering
+    # 7. Studio DSP Mastering
     if enable_mastering:
         final_wav = apply_studio_mastering(
             raw_wav_path,
             output_wav_path,
             pitch_semitones=pitch_semitones,
-            speed_factor=1.0,  # Speed already applied by F5-TTS natively
+            speed_factor=1.0,  # Speed is natively handled by F5-TTS
             warmth_drive=warmth_drive,
             room_reverb_wet=room_reverb_wet,
             deess_gain_db=deess_gain_db,
@@ -189,7 +265,7 @@ def synthesize_f5(
         shutil.copyfile(raw_wav_path, output_wav_path)
         final_wav = output_wav_path
 
-    # Cleanup raw
+    # Cleanup raw intermediate
     if os.path.exists(raw_wav_path) and raw_wav_path != output_wav_path:
         os.remove(raw_wav_path)
 

@@ -102,8 +102,9 @@ def preview_checkpoint_audio(
             warmth_drive=warmth_drive,
             enable_mastering=True,
         )
-    except Exception as e:
-        logger.warning(f"F5-TTS runtime fallback ({e}). Simulating checkpoint preview waveform.")
+    except ImportError as ie:
+        # Headless testing environment without f5-tts (e.g. VPS CI)
+        logger.info(f"F5-TTS library not installed in host environment ({ie}). Running simulated test waveform.")
         sample_rate = 24000
         dur_sim = max(1.5, len(text.split()) * 0.38)
         num_samples = int(sample_rate * dur_sim)
@@ -120,6 +121,12 @@ def preview_checkpoint_audio(
         )
         if os.path.exists(raw_tmp) and raw_tmp != output_wav:
             os.remove(raw_tmp)
+    except Exception as real_err:
+        logger.error(f"F5-TTS synthesis failed: {real_err}")
+        raise RuntimeError(
+            f"F5-TTS synthesis failed: {real_err}\n"
+            f"คำแนะนำ: ตรวจสอบว่าได้รัน Step 2-4 เพื่อเตรียมไฟล์เสียงต้นฉบับของผู้พูด '{speaker_id}' ใน Google Drive หรือยัง"
+        ) from real_err
 
     elapsed = time.perf_counter() - t0
     dur = 0.0
