@@ -158,9 +158,9 @@ def synthesize_f5(
             infer_process,
         )
         import torch
-    except ImportError:
+    except ImportError as e:
         raise ImportError(
-            "f5-tts and vocos are required. Run: pip install f5-tts vocos"
+            f"f5-tts and vocos are required. Run: pip install f5-tts vocos. Error details: {e}"
         )
 
     t0 = time.perf_counter()
