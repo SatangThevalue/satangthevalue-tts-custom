@@ -23,6 +23,7 @@ DEFAULT_META_PATH = "/content/drive/MyDrive/tts-project/02_processed/metadata.js
 def _get_f5_base_weights() -> str:
     """Finds or downloads the official F5-TTS Base model weights."""
     candidates = [
+        "/content/drive/MyDrive/tts-project/00_base_models/f5-tts-thai/model_1000000.pt",
         "/content/drive/MyDrive/tts-project/00_base_models/f5-tts/model_base.safetensors",
         "models/f5-tts/model_base.safetensors",
     ]
@@ -31,12 +32,12 @@ def _get_f5_base_weights() -> str:
             logger.info(f"Using cached Base F5-TTS weights: {c}")
             return c
 
-    logger.info("Base weights not found locally. Downloading from HuggingFace Hub (SWivid/F5-TTS)...")
+    logger.info("Base weights not found locally. Downloading VIZINTZOR/F5-TTS-THAI from HuggingFace...")
     from huggingface_hub import hf_hub_download
     return hf_hub_download(
-        repo_id="SWivid/F5-TTS",
-        filename="F5TTS_Base/model_1200000.safetensors",
-        cache_dir="/content/drive/MyDrive/tts-project/00_base_models/f5-tts-hf",
+        repo_id="VIZINTZOR/F5-TTS-THAI",
+        filename="model_1000000.pt",
+        cache_dir="/content/drive/MyDrive/tts-project/00_base_models/f5-tts-thai-hf",
     )
 
 
@@ -171,6 +172,10 @@ def synthesize_f5(
     # 1. Select reference audio & text
     if ref_audio_path is None or ref_text is None:
         ref_audio_path, ref_text = _pick_best_ref_chunk(speaker_id, wavs_base, meta_path)
+
+    # VIZINTZOR F5-TTS guideline: ensure reference text ends with punctuation
+    if ref_text and not ref_text.endswith((".", "!", "?", "。")):
+        ref_text = ref_text + "."
 
     logger.info(f"Reference: {Path(ref_audio_path).name} | Ref text: '{ref_text[:40]}...'")
 
