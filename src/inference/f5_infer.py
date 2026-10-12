@@ -11,6 +11,14 @@ from typing import Optional, Tuple
 import numpy as np
 import soundfile as sf
 
+# Compatibility shim: alias numpy._core.strings to numpy.char if missing
+if not hasattr(np, "char"):
+    try:
+        import numpy._core.strings as _np_strings
+        np.char = _np_strings
+    except Exception:
+        pass
+
 from src.audio.mastering import apply_studio_mastering
 from src.utils.logger import setup_logger
 
@@ -163,6 +171,15 @@ def synthesize_f5(
         raise ImportError(
             f"f5-tts and vocos are required. Run: pip install f5-tts vocos. Error details: {e}"
         )
+
+    # Compatibility shim: alias numpy._core.strings to numpy.char if missing
+    import numpy as _np
+    if not hasattr(_np, "char"):
+        try:
+            import numpy._core.strings as _np_strings
+            _np.char = _np_strings
+        except Exception:
+            pass
 
     t0 = time.perf_counter()
     logger.info(f"F5-TTS synthesizing for speaker '{speaker_id}': '{text[:50]}...'")

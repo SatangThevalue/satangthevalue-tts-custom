@@ -6,6 +6,14 @@ import time
 from typing import List, Tuple, Dict, Any, Optional
 import numpy as np
 import soundfile as sf
+
+# Compatibility shim: alias numpy._core.strings to numpy.char if missing
+if not hasattr(np, "char"):
+    try:
+        import numpy._core.strings as _np_strings
+        np.char = _np_strings
+    except Exception:
+        pass
 from scipy.signal import spectrogram
 
 from src.utils.logger import setup_logger
