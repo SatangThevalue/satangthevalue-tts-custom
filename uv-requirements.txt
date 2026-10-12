@@ -69,8 +69,6 @@ click==8.5.0
     #   wandb
 cloudpickle==3.1.2
     # via joblib
-colorama==0.4.6
-    # via onnxslim
 contourpy==1.3.3
     # via matplotlib
 cryptography==50.0.2
@@ -237,10 +235,6 @@ matplotlib==3.11.2
     # via f5-tts
 mdurl==0.1.2
     # via markdown-it-py
-ml-dtypes==0.4.0
-    # via
-    #   satangthevalue-tts-custom (pyproject.toml)
-    #   onnxslim
 mpmath==1.3.0
     # via sympy
 msgpack==1.2.3
@@ -259,7 +253,6 @@ numba==0.68.0
     # via librosa
 numpy==1.26.4
     # via
-    #   satangthevalue-tts-custom (pyproject.toml)
     #   accelerate
     #   bitsandbytes
     #   contourpy
@@ -270,9 +263,7 @@ numpy==1.26.4
     #   gradio
     #   librosa
     #   matplotlib
-    #   ml-dtypes
     #   numba
-    #   onnx
     #   onnxruntime
     #   pandas
     #   pedalboard
@@ -327,16 +318,8 @@ nvidia-nvtx==13.0.85
     # via cuda-toolkit
 omegaconf==2.3.1
     # via hydra-core
-onnx==1.16.2
-    # via
-    #   satangthevalue-tts-custom (pyproject.toml)
-    #   onnxslim
 onnxruntime==1.31.0
-    # via
-    #   satangthevalue-tts-custom (pyproject.toml)
-    #   faster-whisper
-onnxslim==0.1.98
-    # via satangthevalue-tts-custom (pyproject.toml)
+    # via faster-whisper
 opentelemetry-api==1.45.1
     # via
     #   fastapi
@@ -380,7 +363,6 @@ packaging==26.3
     #   lazy-loader
     #   matplotlib
     #   onnxruntime
-    #   onnxslim
     #   peft
     #   pooch
     #   transformers
@@ -417,7 +399,6 @@ protobuf==7.36.2
     # via
     #   google-api-core
     #   googleapis-common-protos
-    #   onnx
     #   onnxruntime
     #   opentelemetry-proto
     #   proto-plus
@@ -536,7 +517,6 @@ starlette==1.7.0
 sympy==1.14.0
     # via
     #   einx
-    #   onnxslim
     #   torch
 threadpoolctl==3.7.0
     # via scikit-learn
