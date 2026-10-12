@@ -8,14 +8,6 @@ from typing import Dict, Any, Optional, Tuple
 import numpy as np
 import soundfile as sf
 
-# Compatibility shim: alias numpy._core.strings to numpy.char if missing
-if not hasattr(np, "char"):
-    try:
-        import numpy._core.strings as _np_strings
-        np.char = _np_strings
-    except Exception:
-        pass
-
 from src.audio.mastering import apply_studio_mastering
 from src.g2p.text_norm import text_to_phonemes
 from src.inference.f5_infer import synthesize_f5
